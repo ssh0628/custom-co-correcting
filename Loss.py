@@ -45,7 +45,7 @@ class Loss(object):
 
     # Compatibility 손실 (현재 라벨 분포와 초기 라벨 또는 타겟과의 호환성)
     def _pencil_loss_compatibility(self, Y, T, reduction='mean'):
-        return F.cross_entropy(Y, T, reduction=reduction)
+        return F.nll_loss(torch.log(Y + 1e-10), T, reduction=reduction)
 
     def _pencil_loss(self, X, last_y_var_A, alpha, beta, reduction='mean', target_var=None):
         # 최종 PENCIL 손실 계산: KL Div + alpha * Compatibility + beta * Entropy
@@ -142,7 +142,7 @@ class Loss(object):
 
     # Loss functions
     def loss_coteaching(self, y_1, y_2, t_1, t_2, forget_rate, loss_type='CE', ind=[], noise_or_not=[],
-                        target_var=None, parallel=False, softmax=False):
+                        target_var=None, parallel=False, softmax=False, **kwargs):
         """
         Co-teaching Loss 함수
         두 네트워크(NetA, NetB)가 서로 Small Loss 샘플을 선택하여 교차 학습합니다.
@@ -162,10 +162,10 @@ class Loss(object):
             y_2 = self.softmax(y_2)
 
         # compute NetA prediction loss
-        ind_1_sorted = self._sort_by_loss(y_1, t_1, loss_type=loss_type, index=True, target_var=target_var)
+        ind_1_sorted = self._sort_by_loss(y_1, t_1, loss_type=loss_type, index=True, target_var=target_var, **kwargs)
 
         # compute NetB prediction loss
-        ind_2_sorted = self._sort_by_loss(y_2, t_2, loss_type=loss_type, index=True, target_var=target_var)
+        ind_2_sorted = self._sort_by_loss(y_2, t_2, loss_type=loss_type, index=True, target_var=target_var, **kwargs)
 
         # catch R(t)% samples
         remember_rate = 1 - forget_rate
@@ -185,21 +185,21 @@ class Loss(object):
         # exchange
         if parallel:
             loss_1_update = self._get_loss(y_1[ind_2_update], t_1[ind_2_update], loss_type=loss_type, reduction='none',
-                                           target_var=None if target_var == None else target_var[ind_2_update])
+                                           target_var=None if target_var == None else target_var[ind_2_update], **kwargs)
             loss_2_update = self._get_loss(y_2[ind_1_update], t_2[ind_1_update], loss_type=loss_type, reduction='none',
-                                           target_var=None if target_var == None else target_var[ind_1_update])
+                                           target_var=None if target_var == None else target_var[ind_1_update], **kwargs)
         else:
             loss_1_update = self._get_loss(y_1[ind_2_update], t_2[ind_2_update], loss_type=loss_type, reduction='none',
-                                           target_var=None if target_var == None else target_var[ind_2_update])
+                                           target_var=None if target_var == None else target_var[ind_2_update], **kwargs)
             loss_2_update = self._get_loss(y_2[ind_1_update], t_1[ind_1_update], loss_type=loss_type, reduction='none',
-                                           target_var=None if target_var == None else target_var[ind_1_update])
+                                           target_var=None if target_var == None else target_var[ind_1_update], **kwargs)
 
 
         return torch.sum(loss_1_update) / num_remember, torch.sum(loss_2_update) / num_remember, ind_1_update, ind_2_update,\
                ind_1_discard, ind_2_discard, pure_ratio_1, pure_ratio_2, pure_ratio_discard_1, pure_ratio_discard_2
 
     def loss_coteaching_plus(self, y_1, y_2, t_1, t_2, forget_rate, step, ind=[], loss_type='CE',
-                             noise_or_not=[], target_var=None, parallel=False, softmax=True):
+                             noise_or_not=[], target_var=None, parallel=False, softmax=True, **kwargs):
         """
         Co-teaching+ Loss 함수
         Co-teaching의 개선판으로, 두 모델의 예측이 '불일치(Disagree)'하는 샘플 중에서
@@ -230,7 +230,7 @@ class Loss(object):
             loss_1, loss_2, _ind_1_update, _ind_2_update, _ind_1_discard, _ind_2_discard, \
             pure_ratio_1, pure_ratio_2, pure_ratio_discard_1, pure_ratio_discard_2 = self.loss_coteaching(
                 update_outputs, update_outputs2, update_label_1, update_label_2, forget_rate, loss_type, ind_disagree,
-                noise_or_not, target_var=update_target_var, parallel=parallel)
+                noise_or_not, target_var=update_target_var, parallel=parallel, **kwargs)
 
             # predict same sample will be discard
             ind_1_update = disagree_id[_ind_1_update]
@@ -248,8 +248,8 @@ class Loss(object):
             update_step = logical_disagree_id | (step < 5000)
             update_step = update_step.type(torch.float32).to(self.args.device)
 
-            l1 = self._get_loss(update_outputs, update_label_1, loss_type=loss_type, reduction='mean', target_var=target_var)
-            l2 = self._get_loss(update_outputs2, update_label_2, loss_type=loss_type, reduction='mean', target_var=target_var)
+            l1 = self._get_loss(update_outputs, update_label_1, loss_type=loss_type, reduction='mean', target_var=target_var, **kwargs)
+            l2 = self._get_loss(update_outputs2, update_label_2, loss_type=loss_type, reduction='mean', target_var=target_var, **kwargs)
 
             loss_1 = torch.sum(update_step * l1) / t_1.shape[0]
             loss_2 = torch.sum(update_step * l2) / t_2.shape[0]

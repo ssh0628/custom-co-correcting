@@ -95,7 +95,7 @@ class CoCorrecting(BasicTrainer, Loss):
         os.makedirs(self.args.dir, exist_ok=True)
         os.makedirs(join(self.args.dir, 'record'), exist_ok=True)
 
-        keys = ['acc', 'acc5', 'label_accu', 'loss', "pure_ratio", "label_n2t", "label_t2n", "pure_ratio_discard"]
+        keys = ['acc', 'acc5', 'label_accu', 'loss', "pure_ratio", "label_n2t", "label_t2n", "pure_ratio_discard", "margin_accu"]
         record_infos = {}
         for k in keys:
             record_infos[k] = []
@@ -176,7 +176,7 @@ class CoCorrecting(BasicTrainer, Loss):
         if epoch < self.args.stage1:
             # y_tilde 초기화: 초반에는 주어진 라벨(target)을 그대로 사용
             onehot = torch.zeros(target.size(0),
-                                 self.args.classnum).scatter_(1, target.view(-1, 1), self.args.K)
+                                 self.args.classnum).scatter_(1, target.long().view(-1, 1), self.args.K)
             onehot = onehot.numpy()
             self.new_y[index, :] = onehot
             # Co-teaching 학습 진행
@@ -193,7 +193,7 @@ class CoCorrecting(BasicTrainer, Loss):
                 # ANL Loss 사용 시 (Stage 1 Warmup)
                 lossA, lossB, ind_A_update, ind_B_update, ind_A_discard, ind_B_discard, pure_ratio_1, pure_ratio_2, \
                 pure_ratio_discard_1, pure_ratio_discard_2 = self.loss_coteaching(outputA, outputB, target_var, target_var,
-                      forget_rate, ind=index, loss_type='anl', noise_or_not=self.noise_or_not, softmax=True)
+                      forget_rate, ind=index, loss_type='anl', noise_or_not=self.noise_or_not, softmax=True, beta=self.args.beta)
             else:
                 raise NotImplementedError("loss_type {} not been found".format(self.args.loss_type))
             return lossA, lossB, onehot, onehot, ind_A_discard, ind_B_discard, ind_A_update, ind_B_update, \
@@ -545,7 +545,7 @@ class CoCorrecting(BasicTrainer, Loss):
             index = index.numpy()
 
             input = input.to(self.args.device)
-            target1 = target.to(self.args.device)
+            target1 = target.to(self.args.device).long()
             input_var = input.clone().to(self.args.device)
             target_var = target1.clone().to(self.args.device)
 
@@ -794,7 +794,7 @@ class CoCorrecting(BasicTrainer, Loss):
             for i, (img, label, index) in enumerate(self.valloader):
 
                 img = img.to(self.args.device)
-                label = label.to(self.args.device)
+                label = label.to(self.args.device).long()
 
                 outputA = self.modelA(img)
                 lossA = self.criterion(outputA, label)
@@ -883,7 +883,7 @@ class CoCorrecting(BasicTrainer, Loss):
             for i, (img, label, index) in enumerate(self.testloader):
 
                 img = img.to(self.args.device)
-                label = label.to(self.args.device)
+                label = label.to(self.args.device).long()
 
                 outputA = self.modelA(img)
                 lossA = self.criterion(outputA, label)

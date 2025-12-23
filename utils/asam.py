@@ -107,3 +107,11 @@ class ASAM(torch.optim.Optimizer):
         # 기본 옵티마이저의 step() 호출 (SGD Update)
         # 이때 p.grad는 "w + epsilon" 위치에서 계산된 그라디언트임.
         self.optimizer.step()
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        """
+        일반적인 Step (Warmup 등에서 사용)
+        ASAM 로직 없이, 감싸고 있는 기본 옵티마이저(SGD)의 step을 호출합니다.
+        """
+        return self.optimizer.step(closure)
