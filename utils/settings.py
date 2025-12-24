@@ -36,7 +36,7 @@ def get_args():
         petskin_root = 'D:/Datasets/PetSkin'
         mnist_root = './data/mnist'
         pcam_root = "C:\\Users\\cream\\OneDrive\\Desktop\\co-correcting-data"
-        batch_size = 16
+        batch_size = 32
         device = 'cuda:0' # GPU 사용 시
         data_device = 0
         noise_type = 'clean'
@@ -78,8 +78,9 @@ def get_args():
                         help="최적화 알고리즘 (Optimizer) 선택")
     parser.add_argument('--scheduler', dest='scheduler', default=None, type=str, choices=['cyclic', None, "SWA"],
                         help="학습률 스케줄러 선택")
-    parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
-                        help='데이터 로딩에 사용할 워커 프로세스 수 (기본값: 4)')
+    # 기존 코드는 Default로 4로 설정되어 있었음
+    parser.add_argument('-j', '--workers', default=0, type=int, metavar='N',
+                        help='데이터 로딩에 사용할 워커 프로세스 수 (기본값: 0)')
     
     # Co-teaching 파라미터 (라벨 노이즈 처리를 위한 핵심 설정)
     """
