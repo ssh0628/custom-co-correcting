@@ -43,7 +43,7 @@ class BasicTrainer(object):
         # 학습 설정(메타 데이터) 저장
         # 나중에 어떤 파라미터로 학습했는지 확인하기 위함
         print(vars(self.args))
-        nowTime = datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
+        nowTime = datetime.datetime.now().strftime('%Y-%m-%d-%H_%M_%S')
         with open(join(self.args.dir, "settings-{}.json".format(nowTime)), 'w') as f:
             json.dump(vars(self.args), f, indent=4, sort_keys=True)
 

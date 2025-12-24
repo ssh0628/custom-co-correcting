@@ -29,6 +29,20 @@ def get_args():
         noise_type = 'sn'
         stage1 = 70
         stage2 = 200
+
+    elif sys.platform == 'win32':
+        # Windows 전용 기본 설정
+        isic_root = 'D:/Datasets/ISIC'
+        petskin_root = 'D:/Datasets/PetSkin'
+        mnist_root = './data/mnist'
+        pcam_root = "C:\\Users\\cream\\OneDrive\\Desktop\\co-correcting-data"
+        batch_size = 16
+        device = 'cuda:0' # GPU 사용 시
+        data_device = 0
+        noise_type = 'clean'
+        stage1 = 70
+        stage2 = 200
+
     else:
         # 기본 설정 (Default)
         clothing1m_root = "/home/fgldlb/Documents/dataset/Clothing-1M"
@@ -197,10 +211,10 @@ def get_args():
         args.stage2 = 200
         args.epochs = 320
         args.datanum = 262144
-        args.train_redux = 26214
-        args.test_redux = 3276
-        args.val_redux = 3276
-        args.val_redux = 3276
+        # args.train_redux = 26214
+        # args.test_redux = 3276
+        # args.val_redux = 3276
+        # args.val_redux = 3276
         args.random_ind_redux = False
 
     elif args.dataset == 'petskin':
