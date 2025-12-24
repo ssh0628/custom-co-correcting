@@ -181,21 +181,18 @@ class CoCorrecting(BasicTrainer, Loss):
             self.new_y[index, :] = onehot
             # Co-teaching 학습 진행
             forget_rate = self._rate_schedule(epoch)
-            if self.args.loss_type == 'coteaching':
+            if self.args.forget_type == 'coteaching':
+                # [선택 전략 1] Co-teaching: 손실(Loss)이 작은 샘플을 서로 교차 선택
                 lossA, lossB, ind_A_update, ind_B_update, ind_A_discard, ind_B_discard, pure_ratio_1, pure_ratio_2, \
                 pure_ratio_discard_1, pure_ratio_discard_2 = self.loss_coteaching(outputA, outputB, target_var, target_var,
-                      forget_rate, ind=index, loss_type='CE', noise_or_not=self.noise_or_not, softmax=True)
-            elif self.args.loss_type == 'coteaching_plus':
+                      forget_rate, ind=index, loss_type=self.args.cost_type, noise_or_not=self.noise_or_not, softmax=True, beta=self.args.beta)
+            elif self.args.forget_type == 'coteaching_plus':
+                # [선택 전략 2] Co-teaching+: 두 모델의 예측이 불일치(Disagree)하는 샘플 중에서 손실이 작은 것을 선택 (Disagreement Strategy)
                 lossA, lossB, ind_A_update, ind_B_update, ind_A_discard, ind_B_discard, pure_ratio_1, pure_ratio_2, \
                 pure_ratio_discard_1, pure_ratio_discard_2 = self.loss_coteaching_plus(outputA, outputB, target_var, target_var,
-                    forget_rate, epoch * i, index, loss_type='CE', noise_or_not=self.noise_or_not, softmax=False)
-            elif self.args.loss_type == 'anl':
-                # ANL Loss 사용 시 (Stage 1 Warmup)
-                lossA, lossB, ind_A_update, ind_B_update, ind_A_discard, ind_B_discard, pure_ratio_1, pure_ratio_2, \
-                pure_ratio_discard_1, pure_ratio_discard_2 = self.loss_coteaching(outputA, outputB, target_var, target_var,
-                      forget_rate, ind=index, loss_type='anl', noise_or_not=self.noise_or_not, softmax=True, beta=self.args.beta)
+                    forget_rate, epoch * i, index, loss_type=self.args.cost_type, noise_or_not=self.noise_or_not, softmax=False, beta=self.args.beta)
             else:
-                raise NotImplementedError("loss_type {} not been found".format(self.args.loss_type))
+                raise NotImplementedError("forget_type {} not been found".format(self.args.forget_type))
             return lossA, lossB, onehot, onehot, ind_A_discard, ind_B_discard, ind_A_update, ind_B_update, \
                    pure_ratio_1, pure_ratio_2, pure_ratio_discard_1, pure_ratio_discard_2
         
@@ -212,40 +209,20 @@ class CoCorrecting(BasicTrainer, Loss):
             last_y_var_B = self.softmax(yy_B)
             # 샘플 정렬 및 선택 (Small Loss Trick)
             forget_rate = self._rate_schedule(epoch)
-            if self.args.loss_type == 'coteaching':
+            if self.args.forget_type == 'coteaching':
+                # [선택 전략] Co-teaching
                 lossA, lossB, ind_A_update, ind_B_update, ind_A_discard, ind_B_discard, \
                 pure_ratio_1, pure_ratio_2, pure_ratio_discard_1, pure_ratio_discard_2 = self.loss_coteaching(
                     outputA, outputB, last_y_var_A, last_y_var_B, forget_rate, ind=index, loss_type="PENCIL",
                     target_var=target_var, noise_or_not=self.noise_or_not, parallel=parallel, softmax=False)
-            elif self.args.loss_type == 'coteaching_plus':
+            elif self.args.forget_type == 'coteaching_plus':
+                # [선택 전략] Co-teaching+ (Disagreement Strategy)
                 lossA, lossB, ind_A_update, ind_B_update, ind_A_discard, ind_B_discard, \
                 pure_ratio_1, pure_ratio_2, pure_ratio_discard_1, pure_ratio_discard_2 = self.loss_coteaching_plus(
                     outputA, outputB, last_y_var_A, last_y_var_B, forget_rate, epoch * i, index, loss_type="PENCIL",
                     target_var=target_var, noise_or_not=self.noise_or_not, parallel=parallel, softmax=False)
-            elif self.args.loss_type == 'anl':
-                # ANL Logic for Stage 2 (PENCIL equivalent but with ANL?) 
-                # PENCIL 단계에서는 Label Distribution Learning이 핵심이므로, 'PENCIL' 로스 타입을 유지하거나
-                # ANL을 결합해야 함. 하지만 ANL은 Classification Loss임.
-                # 사용자 요청: "_compute_loss 함수에서 args.loss_type == 'anl'일 때 loss_anl을 사용하도록 분기 추가"
-                # PENCIL 모드에서도 Classification Part를 ANL로 대체할 수 있음.
-                # 하지만, 여기서는 loss_coteaching(loss_type='PENCIL')을 호출하되, 내부적으로 ANL을 쓸 수 있게 커스텀해야 함.
-                # 현재 구조상 loss_type='anl'로 보내면 PENCIL KL/Entropy/Compatibility가 적용 안됨.
-                # 따라서, PENCIL 단계에서는 'anl'을 쓰더라도 PENCIL Loss를 쓰는 것이 맞아 보임 (Label Correction을 위해).
-                # 만약 ANL을 꼭 써야 한다면 PENCIL Loss 내 KL 대신 ANL을 써야 하는데, 이는 구조 변경이 큼.
-                # -> "Warm up" 단계에서 ANL을 사용하는 것이 주 목적일 가능성이 높음.
-                # -> 다만 혹시 모르니 여기서도 'anl' 분기는 만들어두되, PENCIL과 유사하게 동작하도록 설정
-                # 혹은 단순히 coteaching selection + ANL loss로 Label Update를 수행?
-                # PENCIL Loss 함수는 (X, Y_dist)를 받음. ANL은 (X, Target_idx)를 받음.
-                # PENCIL 단계에서 Y는 Distribution임. ANL은 Hard Target이 필요함 (Selection Rule 때문에).
-                # 결론: Stage 2에서는 PENCIL Loss를 그대로 사용 (or PENCIL+ANL은 복잡).
-                # 여기서는 일단 기존 PENCIL 로직을 따르도록 fallback 하거나, ANL 전용 로직을 구현해야 함.
-                # 안전하게 'coteaching'과 동일하게 PENCIL Loss 사용 (Label Correction이 중요하므로)
-                 lossA, lossB, ind_A_update, ind_B_update, ind_A_discard, ind_B_discard, \
-                pure_ratio_1, pure_ratio_2, pure_ratio_discard_1, pure_ratio_discard_2 = self.loss_coteaching(
-                    outputA, outputB, last_y_var_A, last_y_var_B, forget_rate, ind=index, loss_type="PENCIL",
-                    target_var=target_var, noise_or_not=self.noise_or_not, parallel=parallel, softmax=False)
             else:
-                raise NotImplementedError("loss_type {} not been found".format(self.args.loss_type))
+                raise NotImplementedError("forget_type {} not been found".format(self.args.forget_type))
             return lossA, lossB, yy_A, yy_B, ind_A_discard, ind_B_discard, ind_A_update, ind_B_update, \
                    pure_ratio_1, pure_ratio_2, pure_ratio_discard_1, pure_ratio_discard_2
         
@@ -259,7 +236,7 @@ class CoCorrecting(BasicTrainer, Loss):
             last_y_var_A = self.softmax(yy_A)
             last_y_var_B = self.softmax(yy_B)
             forget_rate = self._rate_schedule(epoch)
-            if self.args.loss_type == 'coteaching':
+            if self.args.forget_type == 'coteaching':
                 lossA, lossB, ind_A_update, ind_B_update, ind_A_discard, ind_B_discard, pure_ratio_1, pure_ratio_2, \
                 pure_ratio_discard_1, pure_ratio_discard_2 = self.loss_coteaching_plus(outputA, outputB,
                                                                                        last_y_var_A, last_y_var_B,
@@ -268,7 +245,7 @@ class CoCorrecting(BasicTrainer, Loss):
                                                                                        loss_type="PENCIL_KL",
                                                                                        noise_or_not=self.noise_or_not,
                                                                                        softmax=False)
-            elif self.args.loss_type == 'coteaching_plus':
+            elif self.args.forget_type == 'coteaching_plus':
                 lossA, lossB, ind_A_update, ind_B_update, ind_A_discard, ind_B_discard, pure_ratio_1, pure_ratio_2, \
                 pure_ratio_discard_1, pure_ratio_discard_2 = self.loss_coteaching_plus(outputA, outputB,
                                                                                        last_y_var_A, last_y_var_B,
@@ -277,17 +254,8 @@ class CoCorrecting(BasicTrainer, Loss):
                                                                                        loss_type="PENCIL_KL",
                                                                                        noise_or_not=self.noise_or_not,
                                                                                        softmax=False)
-            elif self.args.loss_type == 'anl':
-                 lossA, lossB, ind_A_update, ind_B_update, ind_A_discard, ind_B_discard, pure_ratio_1, pure_ratio_2, \
-                pure_ratio_discard_1, pure_ratio_discard_2 = self.loss_coteaching_plus(outputA, outputB,
-                                                                                       last_y_var_A, last_y_var_B,
-                                                                                       forget_rate, epoch * i,
-                                                                                       index,
-                                                                                       loss_type="PENCIL_KL",
-                                                                                       noise_or_not=self.noise_or_not,
-                                                                                       softmax=False)
             else:
-                raise NotImplementedError("loss_type {} not been found".format(self.args.loss_type))
+                raise NotImplementedError("forget_type {} not been found".format(self.args.forget_type))
  
             return lossA, lossB, yy_A, yy_B, ind_A_discard, ind_B_discard, ind_A_update, ind_B_update, \
                    pure_ratio_1, pure_ratio_2, pure_ratio_discard_1, pure_ratio_discard_2
@@ -613,9 +581,9 @@ class CoCorrecting(BasicTrainer, Loss):
                 
                 # Stage별 Loss Type 결정
                 if epoch < self.args.stage1:
-                    l_type = 'anl' if self.args.loss_type == 'anl' else 'CE'
+                    l_type = self.args.cost_type
                     # Stage 1: Target is noisy label (target_var)
-                    adv_lossA = self._get_loss(outputA_adv[ind_B_update], target_var[ind_B_update], loss_type=l_type)
+                    adv_lossA = self._get_loss(outputA_adv[ind_B_update], target_var[ind_B_update], loss_type=l_type, beta=self.args.beta)
                 elif epoch < self.args.stage2:
                     # Stage 2: Target is Soft Label (yy_A -> last_y_var_A)
                     # last_y_var_A는 Softmax(yy_A)임.
@@ -639,8 +607,8 @@ class CoCorrecting(BasicTrainer, Loss):
                 outputB_adv = self.modelB(input_var)
                 
                 if epoch < self.args.stage1:
-                    l_type = 'anl' if self.args.loss_type == 'anl' else 'CE'
-                    adv_lossB = self._get_loss(outputB_adv[ind_A_update], target_var[ind_A_update], loss_type=l_type)
+                    l_type = self.args.cost_type
+                    adv_lossB = self._get_loss(outputB_adv[ind_A_update], target_var[ind_A_update], loss_type=l_type, beta=self.args.beta)
                 elif epoch < self.args.stage2:
                     adv_lossB = self._get_loss(outputB_adv[ind_A_update], last_y_var_B[ind_A_update], 
                                                alpha=self.args.alpha, beta=self.args.beta, loss_type='PENCIL', target_var=target_var[ind_A_update])

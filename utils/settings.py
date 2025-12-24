@@ -74,13 +74,19 @@ def get_args():
     parser.add_argument('--backbone', dest="backbone", default="resnet50", type=str,
                         help="사용할 백본 네트워크 모델 (예: resnet50)")
     parser.add_argument('--optim', dest="optim", default="SGD", type=str,
-                        choices=['SGD', 'Adam', 'AdamW', 'RMSprop', 'Adadelta', 'Adagrad', 'mix'],
+                        choices=['SGD', 'Adam', 'AdamW', 'RMSprop', 'Adadelta', 'Adagrad', 'mix', 'ASAM'],
                         help="최적화 알고리즘 (Optimizer) 선택")
     parser.add_argument('--scheduler', dest='scheduler', default=None, type=str, choices=['cyclic', None, "SWA"],
                         help="학습률 스케줄러 선택")
     # 기존 코드는 Default로 4로 설정되어 있었음
     parser.add_argument('-j', '--workers', default=0, type=int, metavar='N',
                         help='데이터 로딩에 사용할 워커 프로세스 수 (기본값: 0)')
+    
+    # ASAM Optimizer 파라미터 (Custom)
+    parser.add_argument('--rho', default=0.5, type=float,
+                        help='ASAM의 rho 파라미터 (Ascent Step 크기).')
+    parser.add_argument('--eta', default=0.01, type=float,
+                        help='ASAM의 eta 파라미터 (스무딩 관련).')
     
     # Co-teaching 파라미터 (라벨 노이즈 처리를 위한 핵심 설정)
     """
@@ -93,9 +99,12 @@ def get_args():
                         metavar='H-P', help='선형적으로 망각 비율을 높여갈 에폭 수 (Tk).')
     parser.add_argument('--exponent', default=1, type=float,
                         metavar='H-P', help='망각 비율 증가 지수 (1이면 선형).')
-    parser.add_argument('--loss-type', dest="loss_type", default="coteaching_plus", type=str,
+    parser.add_argument('--forget-type', dest="forget_type", default="coteaching_plus", type=str,
                         choices=['coteaching_plus', 'coteaching'],
-                        help="손실 함수 타입 선택: [coteaching_plus, coteaching]")
+                        help="샘플 선택 방식 (Selection Strategy): [coteaching_plus, coteaching]")
+    parser.add_argument('--cost-type', dest="cost_type", default="CE", type=str,
+                        choices=['CE', 'anl'],
+                        help="비용 함수 (Cost Function): [CE, anl]")
     parser.add_argument('--warmup', '--wm', '--warm-up', default=0, type=float,
                         metavar='H-P', help='웜업(Warm up) 에폭 수. 초기에는 모든 데이터를 신뢰.')
     parser.add_argument('--linear-num', '--linear_num', default=256, type=int,
@@ -208,9 +217,10 @@ def get_args():
         args.dim_reduce = 128
         args.classnum = 2
         args.input_dim = 3
-        args.stage1 = 70
-        args.stage2 = 200
-        args.epochs = 320
+        args.stage1 = 1
+        args.stage2 = 2
+        args.epochs = 3 # 테스트 용으로 설정함
+        args.num_gradual = 3 # 테스트 용으로 설정함
         args.datanum = 262144
         # args.train_redux = 26214
         # args.test_redux = 3276
