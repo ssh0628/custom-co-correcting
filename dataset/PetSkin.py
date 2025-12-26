@@ -72,9 +72,6 @@ class PetSkin(torch.utils.data.Dataset):
         self.all_data = np.array(self.all_data)
         self.all_labels = np.array(self.all_labels)
 
-        self.all_data = np.array(self.all_data)
-        self.all_labels = np.array(self.all_labels)
-
         # Splitting with Stratification
         # To ensure consistent splits across train/val/test instances, we use a fixed random seed
         num_samples = len(self.all_data)
@@ -152,6 +149,46 @@ class PetSkin(torch.utils.data.Dataset):
     def img_loader(self, img_path):
         # Resize on load to save RAM if caching
         img = Image.open(img_path).convert('RGB')
+        
+        # Check for JSON file with bounding box info
+        json_path = os.path.splitext(img_path)[0] + '.json'
+        
+        try:
+            if os.path.exists(json_path):
+                # USE utf-8 encoding for Windows compatibility
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    # Navigate: labelingInfo -> box -> location -> x, y, width, height
+                    # Iterate to find the item with 'box' key
+                    if 'labelingInfo' in data:
+                        for info_item in data['labelingInfo']:
+                            if 'box' in info_item:
+                                box_info = info_item
+                                # Check if location list exists and is not empty
+                                if 'location' in box_info['box'] and len(box_info['box']['location']) > 0:
+                                    loc = box_info['box']['location'][0]
+                                    
+                                    # Safe extraction and INT casting
+                                    try:
+                                        x = int(loc.get('x'))
+                                        y = int(loc.get('y'))
+                                        w = int(loc.get('width'))
+                                        h = int(loc.get('height'))
+                                        
+                                        # Validate dimensions
+                                        if w > 0 and h > 0:
+                                            # Crop: (left, top, right, bottom)
+                                            img = img.crop((x, y, x + w, y + h))
+                                            # Found and cropped, break the loop
+                                            break
+                                    except (ValueError, TypeError):
+                                        # If casting fails or values are None, skip this box or continue
+                                        continue
+        except Exception as e:
+            # Fallback to original full image if any error occurs (parsing, missing keys, etc.)
+            # print(f"Error cropping {img_path}: {e}")
+            pass
+
         return np.asarray(img.resize(self.resize_dim, Image.NEAREST)).astype(np.uint8)
 
     def __getitem__(self, index):
