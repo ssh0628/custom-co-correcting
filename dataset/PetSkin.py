@@ -1,20 +1,25 @@
-
 import torch.utils.data
 import torchvision.transforms as transforms
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFile, UnidentifiedImageError
 import os
 import os.path
 from os.path import join
 import glob
 import json
 from sklearn.model_selection import train_test_split
+from multiprocessing.pool import ThreadPool
+import time
 
 from dataset.utils import noisify
+
+# Allow loading truncated images
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 class PetSkin(torch.utils.data.Dataset):
     '''
     Pet Skin Lesion Dataset (A1-A6)
+    Optimized with Multi-threading, NPY Caching, and Robust Error Handling.
     '''
 
     def __init__(self,
@@ -55,14 +60,7 @@ class PetSkin(torch.utils.data.Dataset):
                 print(f"Warning: Directory {class_dir} not found.")
                 continue
             
-            # Find all jpg files
-            # Pattern: Recursive search or just top level? User said "Datasets/A1~A6... folder inside image"
-            # Assuming flat structure inside A1, or recursive. optimizing for recursive just in case.
-            # Using specific logic: files are like IMG_D_A2_088247.jpg
-            # glob is slightly safer
-            # images = glob.glob(join(class_dir, "**", "*.jpg"), recursive=True) 
-            # Simple listdir might be faster/sufficient if flat
-            
+            # Recursive search for jpg files
             for root_dir, dirs, files in os.walk(class_dir):
                 for file in files:
                     if file.lower().endswith('.jpg') or file.lower().endswith('.jpeg'):
@@ -73,12 +71,10 @@ class PetSkin(torch.utils.data.Dataset):
         self.all_labels = np.array(self.all_labels)
 
         # Splitting with Stratification
-        # To ensure consistent splits across train/val/test instances, we use a fixed random seed
         num_samples = len(self.all_data)
         indices = np.arange(num_samples)
         
         # 1. Split Train vs (Val + Test)
-        # Stratify based on all_labels to preserve class distribution
         train_indices, temp_indices, _, temp_labels = train_test_split(
             indices, self.all_labels,
             train_size=split_ratios[0],
@@ -87,7 +83,6 @@ class PetSkin(torch.utils.data.Dataset):
         )
 
         # 2. Split Val vs Test from the remaining data
-        # Calculate relative ratio: if val=0.15, test=0.15, then val is 50% of the remaining 0.30
         relative_val_size = split_ratios[1] / (split_ratios[1] + split_ratios[2])
         
         val_indices, test_indices = train_test_split(
@@ -100,17 +95,15 @@ class PetSkin(torch.utils.data.Dataset):
         if self.train == 0:
             self.data = self.all_data[train_indices]
             self.labels = self.all_labels[train_indices]
+            subset_name = "train"
         elif self.train == 1:
             self.data = self.all_data[test_indices]
             self.labels = self.all_labels[test_indices]
+            subset_name = "test"
         elif self.train == 2:
             self.data = self.all_data[val_indices]
             self.labels = self.all_labels[val_indices]
-        
-        # Load images into memory if device=1 (RAM)
-        # Note: 32k images might be too large for RAM depending on resolution.
-        # ISIC loader does this. I'll stick to it but warn/add check.
-        # Actually ISIC resizes first.
+            subset_name = "val"
         
         if image_size := get_image_size_from_transform(transform):
              self.resize_dim = (image_size, image_size)
@@ -118,19 +111,42 @@ class PetSkin(torch.utils.data.Dataset):
              self.resize_dim = (224, 224) 
 
         self.loaded_data = []
+        
+        # --- Optimized Loading Logic ---
         if self.device == 1:
-            print(f"Loading {len(self.data)} images into RAM...")
-            for i, img_path in enumerate(self.data):
-                self.loaded_data.append(self.img_loader(img_path))
-                if i % 1000 == 0:
-                    print(f"\rLoaded {i}/{len(self.data)}", end='')
-            print(" Done.")
-            self.loaded_data = np.array(self.loaded_data)
+            # Prepare Cache Directory
+            cache_dir = join(self.root, 'cache_npy')
+            os.makedirs(cache_dir, exist_ok=True)
+            
+            # Cache Filename: includes subset, seed, size, and dataset length to detect changes
+            cache_name = f"petskin_{subset_name}_seed{random_seed}_size{self.resize_dim[0]}x{self.resize_dim[1]}_len{len(self.data)}.npy"
+            cache_path = join(cache_dir, cache_name)
+
+            if os.path.exists(cache_path):
+                print(f"[{subset_name}] Found cached data at {cache_path}. Loading...")
+                st = time.time()
+                self.loaded_data = np.load(cache_path)
+                print(f"[{subset_name}] Loaded {len(self.loaded_data)} images from cache in {time.time()-st:.2f}s")
+            else:
+                # Reduced threads to 16 for stability
+                print(f"[{subset_name}] Cache not found. Loading {len(self.data)} images into RAM using 16 threads...")
+                st = time.time()
+                
+                # Multi-threading loading
+                pool = ThreadPool(16)
+                # Use map to preserve order matching self.data
+                results = pool.map(self.img_loader, self.data)
+                pool.close()
+                pool.join()
+                
+                self.loaded_data = np.array(results)
+                print(f"[{subset_name}] Loaded and formatted data in {time.time()-st:.2f}s")
+                
+                print(f"[{subset_name}] Saving cache to {cache_path}...")
+                np.save(cache_path, self.loaded_data)
+                print(f"[{subset_name}] Cache saved.")
         
         # Noisy labels generation
-        # "noise_type" argument dictates if we ADD synthetic noise.
-        # Since usage of this algo implies combating noise, strict "clean" evaluation 
-        # is only possible if we trust the provided labels as ground truth.
         self.labels = np.asarray(self.labels)
         
         if noise_type == 'clean':
@@ -147,52 +163,57 @@ class PetSkin(torch.utils.data.Dataset):
             self.noise_or_not = self.noisy_labels == self.labels
 
     def img_loader(self, img_path):
-        # Resize on load to save RAM if caching
-        img = Image.open(img_path).convert('RGB')
-        
-        # Check for JSON file with bounding box info
-        json_path = os.path.splitext(img_path)[0] + '.json'
-        
+        """
+        Robust image loader with error handling and fallback to black image.
+        """
         try:
-            if os.path.exists(json_path):
-                # USE utf-8 encoding for Windows compatibility
-                with open(json_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    # Navigate: labelingInfo -> box -> location -> x, y, width, height
-                    # Iterate to find the item with 'box' key
-                    if 'labelingInfo' in data:
-                        for info_item in data['labelingInfo']:
-                            if 'box' in info_item:
-                                box_info = info_item
-                                # Check if location list exists and is not empty
-                                if 'location' in box_info['box'] and len(box_info['box']['location']) > 0:
-                                    loc = box_info['box']['location'][0]
-                                    
-                                    # Safe extraction and INT casting
-                                    try:
-                                        x = int(loc.get('x'))
-                                        y = int(loc.get('y'))
-                                        w = int(loc.get('width'))
-                                        h = int(loc.get('height'))
-                                        
-                                        # Validate dimensions
-                                        if w > 0 and h > 0:
-                                            # Crop: (left, top, right, bottom)
-                                            img = img.crop((x, y, x + w, y + h))
-                                            # Found and cropped, break the loop
-                                            break
-                                    except (ValueError, TypeError):
-                                        # If casting fails or values are None, skip this box or continue
-                                        continue
-        except Exception as e:
-            # Fallback to original full image if any error occurs (parsing, missing keys, etc.)
-            # print(f"Error cropping {img_path}: {e}")
-            pass
+            # Check for JSON file with bounding box info first to know how to crop if needed
+            json_path = os.path.splitext(img_path)[0] + '.json'
+            
+            # Open Image with error handling
+            with Image.open(img_path) as img:
+                img = img.convert('RGB')
+                
+                # Bounding Box Logic
+                if os.path.exists(json_path):
+                    try:
+                        # USE utf-8 encoding for Windows compatibility
+                        with open(json_path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                            # Navigate: labelingInfo -> box -> location -> x, y, width, height
+                            if 'labelingInfo' in data:
+                                for info_item in data['labelingInfo']:
+                                    if 'box' in info_item:
+                                        box_info = info_item
+                                        if 'location' in box_info['box'] and len(box_info['box']['location']) > 0:
+                                            loc = box_info['box']['location'][0]
+                                            try:
+                                                x = int(loc.get('x'))
+                                                y = int(loc.get('y'))
+                                                w = int(loc.get('width'))
+                                                h = int(loc.get('height'))
+                                                
+                                                # Validate dimensions
+                                                if w > 0 and h > 0:
+                                                    crop_box = (x, y, x + w, y + h)
+                                                    # Ensure crop box is within image bounds (optional safety, PIL handles it gracefully usually)
+                                                    img = img.crop(crop_box)
+                                                    break
+                                            except (ValueError, TypeError):
+                                                continue
+                    except Exception:
+                        # If JSON parsing fails, just use the original image
+                        pass
 
-        return np.asarray(img.resize(self.resize_dim, Image.NEAREST)).astype(np.uint8)
+                return np.asarray(img.resize(self.resize_dim, Image.NEAREST)).astype(np.uint8)
+                
+        except (OSError, UnidentifiedImageError, Exception) as e:
+            # Critical Error Handler: Return black image
+            print(f"Error loading image {img_path}: {e}. Returning black image.")
+            return np.zeros((self.resize_dim[1], self.resize_dim[0], 3), dtype=np.uint8)
 
     def __getitem__(self, index):
-        if self.device == 1:
+        if self.device == 1 and len(self.loaded_data) > 0:
             img = self.loaded_data[index]
         else:
             img = self.img_loader(self.data[index])
