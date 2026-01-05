@@ -184,6 +184,9 @@ def get_args():
                         metavar='PATH', help='save dir')
     parser.add_argument('--random-seed', dest='random_seed', default=None, type=int,
                         metavar='N', help='pytorch random seed, default None.')
+    parser.add_argument('--resume', default='', type=str, metavar='PATH',
+                    help='path to latest checkpoint (default: none)')
+
     args = parser.parse_args()
 
     # Setting for different dataset
@@ -235,7 +238,7 @@ def get_args():
         args.classnum = 6 # 클래스 개수 (A1~A6)
         args.input_dim = 3 # 입력 채널 (RGB)
         # 기본 데이터 개수 설정 (실제 데이터셋 크기에 따라 다를 수 있음)
-        args.datanum = 32000
+        args.datanum = 16341
 
 
 

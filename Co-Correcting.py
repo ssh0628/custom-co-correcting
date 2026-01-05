@@ -58,6 +58,23 @@ class CoCorrecting(BasicTrainer, Loss):
             eta = getattr(self.args, 'eta', 0.01)
             self.optimizerA = ASAM(self.optimizerA, self.modelA, rho=rho, eta=eta)
             self.optimizerB = ASAM(self.optimizerB, self.modelB, rho=rho, eta=eta)
+        
+        # 체크 포인트 불러오기
+        if args.resume:
+            if os.path.isfile(args.resume):
+                print(f"=> loading checkpoint '{args.resume}'")
+                checkpoint = torch.load(args.resume)
+                self.start_epoch = checkpoint['epoch']
+                
+                self.modelA.load_state_dict(checkpoint['state_dict_A'])
+                self.optimizerA.load_state_dict(checkpoint['optimizer_A'])
+                self.modelB.load_state_dict(checkpoint['state_dict_B'])
+                self.optimizerB.load_state_dict(checkpoint['optimizer_B'])
+                
+                print(f"=> loaded checkpoint '{args.resume}' (epoch {checkpoint['epoch']})")
+            else:
+                print(f"=> no checkpoint found at '{args.resume}'")
+
         # trainer init
         self._recoder_init()
         self._save_meta()
@@ -295,7 +312,7 @@ class CoCorrecting(BasicTrainer, Loss):
                 featureB = []
 
                 features = np.zeros((self.train_data_num, num_features * 2), dtype=np.float32)
-                labels = np.zeros(self.train_data_num, dtype=np.long)
+                labels = np.zeros(self.train_data_num, dtype=np.int64)
 
                 for i, (input, target, index) in enumerate(self.trainloader):
                     input = input.to(self.args.device)
@@ -335,7 +352,7 @@ class CoCorrecting(BasicTrainer, Loss):
                 featureA = []
 
                 features = np.zeros((self.train_data_num, num_features), dtype=np.float32)
-                labels = np.zeros(self.train_data_num, dtype=np.long)
+                labels = np.zeros(self.train_data_num, dtype=np.int64)
 
                 for i, (input, target, index) in enumerate(self.trainloader):
                     input = input.to(self.args.device)
@@ -381,7 +398,7 @@ class CoCorrecting(BasicTrainer, Loss):
                 featureB = []
 
                 features = np.zeros((self.train_data_num, self.args.dim_reduce), dtype=np.float32)
-                labels = np.zeros(self.train_data_num, dtype=np.long)
+                labels = np.zeros(self.train_data_num, dtype=np.int64)
 
                 featureA_ = np.zeros((self.train_data_num, num_features), dtype=np.float32)
                 featureB_ = np.zeros((self.train_data_num, num_features), dtype=np.float32)
@@ -934,11 +951,11 @@ def accuracy(output, target, topk=(1,)):
 
     _, pred = output.topk(maxk, 1, True, True)
     pred = pred.t()
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
+    correct = pred.eq(target.reshape(1, -1).expand_as(pred))
 
     res = []
     for k in topk:
-        correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
+        correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True) # 원래는 reshape가 아니라 view였음
         res.append(correct_k.mul_(100.0 / batch_size))
     return res
 
