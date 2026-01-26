@@ -10,6 +10,7 @@ from os.path import join
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from sklearn.decomposition import PCA
 
 from utils.settings import get_args
@@ -38,8 +39,28 @@ class CoCorrecting(BasicTrainer, Loss):
             prepare optim, loss func (최적화 도구 및 손실 함수 준비)
         """
         # 상호 학습을 위한 모델 초기화 (동일한 구조의 모델 A, B 생성)
+        # [Design Constraint A] Random Seed 처리
+        # 두 네트워크는 서로 다른 Seed로 초기화하여 초기 Weight를 다르게 가져간다.
+        # 단, 이후 데이터 로더는 동일한 Seed를 사용하여 "Same Data, Different Initial Weights" 조건을 만족시킨다.
+        
+        # Model A Initialization (Seed: Base)
+        if self.args.random_seed is not None:
+            torch.manual_seed(self.args.random_seed)
+            # torch.cuda.manual_seed_all(self.args.random_seed) # If needed for complete determinism
         self.modelA = self._get_model(self.args.backbone)
+        
+        # Model B Initialization (Seed: Base + 1)
+        if self.args.random_seed is not None:
+            torch.manual_seed(self.args.random_seed + 1)
+            # torch.cuda.manual_seed_all(self.args.random_seed + 1)
         self.modelB = self._get_model(self.args.backbone)
+
+        # Reset Seed for DataLoader (Seed: Base)
+        # 중요: 데이터 로더의 순서는 동일해야 하므로 Base Seed로 복구한다.
+        if self.args.random_seed is not None:
+            torch.manual_seed(self.args.random_seed)
+            # torch.cuda.manual_seed_all(self.args.random_seed)
+
         self.modelC = self._get_model(self.args.backbone)
         # Optimizer & Criterion (최적화 함수 및 기준)
 
@@ -61,6 +82,10 @@ class CoCorrecting(BasicTrainer, Loss):
             eta = getattr(self.args, 'eta', 0.01)
             self.optimizerA = ASAM(self.optimizerA, self.modelA, rho=rho, eta=eta)
             self.optimizerB = ASAM(self.optimizerB, self.modelB, rho=rho, eta=eta)
+
+        if self.args.scheduler == "Cosine":
+            self.schedulerA = CosineAnnealingLR(self.optimizerA, T_max=self.args.epochs, eta_min=1e-6)
+            self.schedulerB = CosineAnnealingLR(self.optimizerB, T_max=self.args.epochs, eta_min=1e-6)
         
         # 체크 포인트 불러오기
         if args.resume:
@@ -192,27 +217,45 @@ class CoCorrecting(BasicTrainer, Loss):
         # 손실 계산 함수 (핵심 로직)
         
         # 1. Warm Up 단계 (Stage 1 이전)
-        # - 초기에는 Cross Entropy Loss로 일반적인 학습 진행
+        # - Loss: Cross Entropy Only
+        # - Forget-rate: 0 (No forgetting)
+        # - Filtering: None (All samples used)
+        # - Drop Path: 0 (Handled in training loop)
+        # - Disagreement: Not used
         if epoch < self.args.stage1:
             # y_tilde 초기화: 초반에는 주어진 라벨(target)을 그대로 사용
-            onehot = torch.zeros(target.size(0),
-                                 self.args.classnum).scatter_(1, target.long().view(-1, 1), self.args.K)
-            onehot = onehot.numpy()
+            onehot = torch.zeros(
+                len(target),
+                self.args.classnum,
+                device=target_var.device
+            )
+
+            onehot.scatter_(1, target_var.long().view(-1, 1), self.args.K)
+
+            onehot = onehot.cpu().numpy()
             self.new_y[index, :] = onehot
-            # Co-teaching 학습 진행
-            forget_rate = self._rate_schedule(epoch)
-            if self.args.forget_type == 'coteaching':
-                # [선택 전략 1] Co-teaching: 손실(Loss)이 작은 샘플을 서로 교차 선택
-                lossA, lossB, ind_A_update, ind_B_update, ind_A_discard, ind_B_discard, pure_ratio_1, pure_ratio_2, \
-                pure_ratio_discard_1, pure_ratio_discard_2 = self.loss_coteaching(outputA, outputB, target_var, target_var,
-                      forget_rate, ind=index, loss_type=self.args.cost_type, noise_or_not=self.noise_or_not, softmax=True, beta=self.args.beta)
-            elif self.args.forget_type == 'coteaching_plus':
-                # [선택 전략 2] Co-teaching+: 두 모델의 예측이 불일치(Disagree)하는 샘플 중에서 손실이 작은 것을 선택 (Disagreement Strategy)
-                lossA, lossB, ind_A_update, ind_B_update, ind_A_discard, ind_B_discard, pure_ratio_1, pure_ratio_2, \
-                pure_ratio_discard_1, pure_ratio_discard_2 = self.loss_coteaching_plus(outputA, outputB, target_var, target_var,
-                    forget_rate, epoch * i, index, loss_type=self.args.cost_type, noise_or_not=self.noise_or_not, softmax=False, beta=self.args.beta)
-            else:
-                raise NotImplementedError("forget_type {} not been found".format(self.args.forget_type))
+            
+            # Calculate Standard CE Loss for ALL samples
+            # No Co-teaching selection here. Just simple training constraints.
+            lossA = self._get_loss(outputA, target_var, loss_type="CE")
+            lossB = self._get_loss(outputB, target_var, loss_type="CE")
+            
+            # All indices are "updated", none are "discarded"
+            ind_A_discard = np.array([], dtype=int)
+            ind_B_discard = np.array([], dtype=int)
+            
+            # All samples are used for update
+            num_samples = target.size(0)
+            ind_A_update = np.arange(num_samples)
+            ind_B_update = np.arange(num_samples)
+            
+            # Statistics for logging (Pure Ratio is based on noise_or_not for monitoring)
+            # Since we pick ALL, the pure ratio is just the dataset's pure ratio in this batch
+            pure_ratio_1 = np.sum(self.noise_or_not[index]) / float(num_samples)
+            pure_ratio_2 = np.sum(self.noise_or_not[index]) / float(num_samples)
+            pure_ratio_discard_1 = 0.0
+            pure_ratio_discard_2 = 0.0
+
             return lossA, lossB, onehot, onehot, ind_A_discard, ind_B_discard, ind_A_update, ind_B_update, \
                    pure_ratio_1, pure_ratio_2, pure_ratio_discard_1, pure_ratio_discard_2
         
@@ -292,16 +335,20 @@ class CoCorrecting(BasicTrainer, Loss):
 
             self.modelA.eval()
             with torch.no_grad():
-                layer_num = 0
-                for i in self.modelA.modules():
-                    layer_num += 1
-                target_layer_ind = layer_num - 2
-                for i, j in enumerate(self.modelA.modules()):
-                    if i == target_layer_ind:
-                        handleA = j.register_forward_hook(hookA)
-                for i, j in enumerate(self.modelB.modules()):
-                    if i == target_layer_ind:
-                        handleB = j.register_forward_hook(hookB)
+                if 'convnext' in self.args.backbone.lower():
+                    handleA = self.modelA.head.flatten.register_forward_hook(hookA)
+                    handleB = self.modelB.head.flatten.register_forward_hook(hookB)
+                else:
+                    layer_num = 0
+                    for i in self.modelA.modules():
+                        layer_num += 1
+                    target_layer_ind = layer_num - 2
+                    for i, j in enumerate(self.modelA.modules()):
+                        if i == target_layer_ind:
+                            handleA = j.register_forward_hook(hookA)
+                    for i, j in enumerate(self.modelB.modules()):
+                        if i == target_layer_ind:
+                            handleB = j.register_forward_hook(hookB)
 
                 # guess feature num
                 for i, (input, target, index) in enumerate(self.trainloader):
@@ -338,13 +385,16 @@ class CoCorrecting(BasicTrainer, Loss):
 
             self.modelA.eval()
             with torch.no_grad():
-                layer_num = 0
-                for i in self.modelA.modules():
-                    layer_num += 1
-                target_layer_ind = layer_num - 2
-                for i, j in enumerate(self.modelA.modules()):
-                    if i == target_layer_ind:
-                        handleA = j.register_forward_hook(hookA)
+                if 'convnext' in self.args.backbone.lower():
+                    handleA = self.modelA.head.flatten.register_forward_hook(hookA)
+                else:
+                    layer_num = 0
+                    for i in self.modelA.modules():
+                        layer_num += 1
+                    target_layer_ind = layer_num - 2
+                    for i, j in enumerate(self.modelA.modules()):
+                        if i == target_layer_ind:
+                            handleA = j.register_forward_hook(hookA)
 
                 # guess feature num
                 for i, (input, target, index) in enumerate(self.trainloader):
@@ -378,16 +428,20 @@ class CoCorrecting(BasicTrainer, Loss):
 
             self.modelA.eval()
             with torch.no_grad():
-                layer_num = 0
-                for i in self.modelA.modules():
-                    layer_num += 1
-                target_layer_ind = layer_num - 2
-                for i, j in enumerate(self.modelA.modules()):
-                    if i == target_layer_ind:
-                        handleA = j.register_forward_hook(hookA)
-                for i, j in enumerate(self.modelB.modules()):
-                    if i == target_layer_ind:
-                        handleB = j.register_forward_hook(hookB)
+                if 'convnext' in self.args.backbone.lower():
+                    handleA = self.modelA.head.flatten.register_forward_hook(hookA)
+                    handleB = self.modelB.head.flatten.register_forward_hook(hookB)
+                else:
+                    layer_num = 0
+                    for i in self.modelA.modules():
+                        layer_num += 1
+                    target_layer_ind = layer_num - 2
+                    for i, j in enumerate(self.modelA.modules()):
+                        if i == target_layer_ind:
+                            handleA = j.register_forward_hook(hookA)
+                    for i, j in enumerate(self.modelB.modules()):
+                        if i == target_layer_ind:
+                            handleB = j.register_forward_hook(hookB)
 
                 # guess feature num
                 for i, (input, target, index) in enumerate(self.trainloader):
@@ -448,6 +502,16 @@ class CoCorrecting(BasicTrainer, Loss):
                 update_stage += 1
         return update_stage
 
+    def _update_drop_path(self, model, drop_path_rate):
+        """
+        Recursively update DropPath rate in timm-based models (e.g. ConvNeXt, ViT)
+        """
+        for module in model.modules():
+            # timm.models.layers.DropPath check by name or type
+            if module.__class__.__name__ == 'DropPath':
+                module.drop_prob = drop_path_rate
+
+
     def training(self):
         # 전체 학습 루프 실행 함수
         timer = AverageMeter()
@@ -455,8 +519,30 @@ class CoCorrecting(BasicTrainer, Loss):
         end = time.time()
         for epoch in range(self.args.start_epoch, self.args.epochs):
             print('-----------------')
+            
+            # [Design Constraint B] Drop Path Rate Scheduling
+            # Stage 0 (Warm-up): 0.0 (Stochasticity 제거하여 초기 학습 안정화)
+            # Stage 1+: 0.0 -> args.drop_path_rate (점진적 증가)
+            if epoch < self.args.warmup:
+                drop_path_rate = 0.0
+            elif epoch < self.args.stage1:
+                total_remaining = self.args.stage1 - self.args.warmup - 1
+                elapsed = epoch - self.args.warmup
+                drop_path_rate = self.args.drop_path_rate + (self.args.drop_path_rate - 0.5) * (elapsed / total_remaining)
+            elif epoch < self.args.stage2:
+                drop_path_rate = self.args.drop_path_rate
+            else:
+                drop_path_rate = self.args.drop_path_rate
+            
+            self._update_drop_path(self.modelA, drop_path_rate)
+            self._update_drop_path(self.modelB, drop_path_rate)
+            print(f"Epoch {epoch}: Current Drop Path Rate = {drop_path_rate:.6f}")
 
-            self._adjust_learning_rate(epoch)
+            if self.args.scheduler == "Cosine":
+                self.schedulerA.step()
+                self.schedulerB.step()
+            else:
+                self._adjust_learning_rate(epoch)
 
             # load y_tilde
             if os.path.isfile(self.args.y_file):
@@ -544,10 +630,10 @@ class CoCorrecting(BasicTrainer, Loss):
             output_mix = (outputA + outputB) / 2
 
             if epoch < self.args.warmup:
-                lossA = self._get_loss(outputA, target1, loss_type="CE")
-                lossB = self._get_loss(outputB, target1, loss_type="CE")
-                pure_ratio_1, pure_ratio_2 = 0, 0
-                pure_ratio_discard_1, pure_ratio_discard_2 = 0, 0
+                
+                lossA, lossB, yy_A, yy_B, ind_A_discard, ind_B_discard, ind_A_update, ind_B_update, pure_ratio_1, pure_ratio_2, \
+                pure_ratio_discard_1, pure_ratio_discard_2 = self._compute_loss(outputA, outputB, target1, target_var,
+                                                                                index, epoch, i)
             else:
                 lossA, lossB, yy_A, yy_B, ind_A_discard, ind_B_discard, ind_A_update, ind_B_update, pure_ratio_1, pure_ratio_2, \
                 pure_ratio_discard_1, pure_ratio_discard_2 = self._compute_loss(outputA, outputB, target, target_var,

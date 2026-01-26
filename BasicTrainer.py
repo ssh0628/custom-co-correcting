@@ -15,11 +15,14 @@ from dataset.ISIC import ISIC
 # from dataset.clothing1m import Clothing1M
 from dataset.PatchCamelyon import PatchCamelyon
 from dataset.PetSkin import PetSkin
+# from dataset.new_PetSkin import PetSkin
 
 from models.densenet import densenet121, densenet161, densenet169, densenet201
 from models.resnet import resnet18, resnet34, resnet50, resnet101, resnet152
 from models.preact_resnet import PreActResNet18, PreActResNet34, PreActResNet50, PreActResNet101, PreActResNet152
 from models.coteaching_model import MLPNet, CNN_small, CNN
+
+from timm import create_model
 
 """
     Experience Environment Setting
@@ -100,6 +103,8 @@ class BasicTrainer(object):
             model = CNN_small(self.args.classnum).to(self.args.device)
         elif backbone == "cnn" or backbone == "CNN":
             model = CNN(n_outputs=self.args.classnum, input_channel=self.args.input_dim, linear_num=self.args.linear_num).to(self.args.device)
+        elif backbone == "convnext" or backbone == "ConvNext":
+            model = create_model(self.args.convnext, pretrained=True, num_classes=self.args.classnum, drop_path_rate=self.args.drop_path_rate).to(self.args.device)
         else:
             print("No matched backbone. Using ResNet50...")
             model = resnet50(pretrained=True, num_classes=self.args.classnum,
@@ -115,7 +120,7 @@ class BasicTrainer(object):
         elif optim == "adam" or optim == "Adam" or optim == "ADAM":
             optimizer = torch.optim.Adam(parm, lr=lr if lr else self.args.lr)
         elif optim == "adamw" or optim == "AdamW":
-            optimizer = torch.optim.AdamW(parm, lr=lr if lr else self.args.lr)
+            optimizer = torch.optim.AdamW(parm, lr=lr if lr else self.args.lr, weight_decay=self.args.weight_decay)
         elif optim == "RMSprop" or optim == "rmsprop":
             optimizer = torch.optim.RMSprop(parm, lr=lr if lr else self.args.lr, momentum=self.args.momentum, weight_decay=self.args.weight_decay)
         elif optim == "Adadelta":

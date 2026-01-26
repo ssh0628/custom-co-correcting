@@ -76,7 +76,7 @@ def get_args():
     parser.add_argument('--optim', dest="optim", default="SGD", type=str,
                         choices=['SGD', 'Adam', 'AdamW', 'RMSprop', 'Adadelta', 'Adagrad', 'mix', 'ASAM'],
                         help="최적화 알고리즘 (Optimizer) 선택")
-    parser.add_argument('--scheduler', dest='scheduler', default=None, type=str, choices=['cyclic', None, "SWA"],
+    parser.add_argument('--scheduler', dest='scheduler', default=None, type=str, choices=['cyclic', None, "SWA", "Cosine"],
                         help="학습률 스케줄러 선택")
     # 기존 코드는 Default로 4로 설정되어 있었음
     parser.add_argument('-j', '--workers', default=0, type=int, metavar='N',
@@ -105,7 +105,7 @@ def get_args():
     parser.add_argument('--cost-type', dest="cost_type", default="CE", type=str,
                         choices=['CE', 'anl'],
                         help="비용 함수 (Cost Function): [CE, anl]")
-    parser.add_argument('--warmup', '--wm', '--warm-up', default=0, type=float,
+    parser.add_argument('--warmup', '--wm', '--warm-up', default=0, type=int,
                         metavar='H-P', help='웜업(Warm up) 에폭 수. 초기에는 모든 데이터를 신뢰.')
     parser.add_argument('--linear-num', '--linear_num', default=256, type=int,
                         metavar='H-P', help='선형 레이어의 노드 수 (일부 모델용).')
@@ -187,6 +187,22 @@ def get_args():
     parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 
+    # ConvNext settings
+    parser.add_argument('--drop-path-rate', dest='drop_path_rate', default=0.2, type=float,
+                        metavar='N', help='drop path rate, default 0.2')
+    parser.add_argument("--convnext", dest="convnext", default="convnextv2_tiny.fcmae_ft_in22k_in1k", type=str,
+                        help="use convnext, default convnextv2_tiny.fcmae_ft_in22k_in1k")
+
+    # Diversity Regularization Settings
+    parser.add_argument('--diversity-lambda-warmup', dest='diversity_lambda_warmup', default=0.1, type=float,
+                        metavar='L', help='Diversity lambda for Warm-up stage (default: 0.1)')
+    parser.add_argument('--diversity-lambda-stage1', dest='diversity_lambda_stage1', default=0.5, type=float,
+                        metavar='L', help='Diversity lambda for Stage 1 (default: 0.5)')
+    parser.add_argument('--diversity-lambda-stage2', dest='diversity_lambda_stage2', default=0.1, type=float,
+                        metavar='L', help='Diversity lambda for Stage 2 (label correction) (default: 0.1)')
+    parser.add_argument('--diversity-lambda-finetune', dest='diversity_lambda_finetune', default=0.0, type=float,
+                        metavar='L', help='Diversity lambda for Fine-tuning stage (default: 0.0)')
+
     args = parser.parse_args()
 
     # Setting for different dataset
@@ -233,7 +249,7 @@ def get_args():
 
     elif args.dataset == 'petskin':
         print("Training on PetSkin")
-        args.backbone = 'resnet50' # 기본 모델: ResNet50
+        # args.backbone = 'resnet50' # 기본 모델: ResNet50 (Deleted to allow user input)
         args.image_size = 224 # 이미지 크기
         args.classnum = 6 # 클래스 개수 (A1~A6)
         args.input_dim = 3 # 입력 채널 (RGB)
