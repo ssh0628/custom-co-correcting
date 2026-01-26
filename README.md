@@ -40,6 +40,15 @@ ASAM Optimizer와 ANL (Adaptive Negative Learning)을 적용하여 라벨 노이
 	- 이미지 캐싱: npy 형식으로 전처리 후 캐싱하여 학습 속도 향상
 - **하이퍼파라미터**
 	- 없음, ROI 기반 자동 처리
+
+### 4. Co-Correcting
+- **개념**
+	- 기본적으로 Dual Network의 agreement를 기반으로 학습
+- **종류**
+  - `Custom-Co-Correcting`: 기본적인 Co-Correcting 학습
+  - `Custom-Co-Correcting-Diversity`: Dual Network의 Diversity를 유도하여 학습
+  (Unsupervised Time Series Outlier Detection with Diversity-Driven Convolutional Ensembles—Extended Version 논문 참고)
+
 ---
 
 ## 설치 및 요구사항
