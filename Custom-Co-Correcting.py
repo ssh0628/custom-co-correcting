@@ -523,21 +523,29 @@ class CoCorrecting(BasicTrainer, Loss):
             # [Design Constraint B] Drop Path Rate Scheduling
             # Stage 0 (Warm-up): 0.0 (Stochasticity 제거하여 초기 학습 안정화)
             # Stage 1+: 0.0 -> args.drop_path_rate (점진적 증가)
+            # ============================
+            # Drop Path Scheduler
+            # ============================
+
             if epoch < self.args.warmup:
                 drop_path_rate = 0.0
             elif epoch < self.args.stage1:
+                min_drop_path_rate = 0.05
                 total_remaining = self.args.stage1 - self.args.warmup - 1
                 elapsed = epoch - self.args.warmup
-                drop_path_rate = self.args.drop_path_rate + (self.args.drop_path_rate - 0.5) * (elapsed / total_remaining)
+                drop_path_rate = min_drop_path_rate + (self.args.drop_path_rate - min_drop_path_rate) * (elapsed / total_remaining)
             elif epoch < self.args.stage2:
                 drop_path_rate = self.args.drop_path_rate
             else:
                 drop_path_rate = self.args.drop_path_rate
-            
+
+            # 모델에 적용
             self._update_drop_path(self.modelA, drop_path_rate)
             self._update_drop_path(self.modelB, drop_path_rate)
+
             print(f"Epoch {epoch}: Current Drop Path Rate = {drop_path_rate:.6f}")
 
+            # LR Scheduler
             if self.args.scheduler == "Cosine":
                 self.schedulerA.step()
                 self.schedulerB.step()
