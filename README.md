@@ -46,7 +46,9 @@ ASAM Optimizer와 ANL (Adaptive Negative Learning)을 적용하여 라벨 노이
 - **종류**
   - `Custom-Co-Correcting`: 기본적인 Co-Correcting 학습
   - `Custom-Co-Correcting-Diversity`: Dual Network의 Diversity를 유도하여 학습
-  (Unsupervised Time Series Outlier Detection with Diversity-Driven Convolutional Ensembles—Extended Version 논문 참고)
+  - (Unsupervised Time Series Outlier Detection with Diversity-Driven Convolutional Ensembles—Extended Version 논문 참고)
+  - 기본적으로 `Custom-Co-Correcting` 사용 권장 (어느 정도 다양성 유지됨/후자는 개발 중)
+  
 ---
 
 ## 설치 및 요구사항
