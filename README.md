@@ -1,7 +1,7 @@
 # Custom Co-Correcting for Noisy Labels
 
-이 프로젝트는 Co-Correcting 알고리즘을 기반으로 커스텀 데이터셋(예: PetSkin)을 학습할 수 있도록 확장한 버전입니다.  
-ASAM Optimizer와 ANL (Adaptive Negative Learning)을 적용하여 라벨 노이즈 환경에서도 안정적인 일반화 성능을 제공합니다.
+이 프로젝트는 Co-Correcting 알고리즘을 기반으로 커스텀 데이터셋(예: PetSkin)을 학습할 수 있도록 확장한 버전입니다.
+ASAM Optimizer을 적용하여 라벨 노이즈 환경에서도 안정적인 일반화 성능을 제공합니다.
 ---
 
 ## 주요 기능
@@ -20,8 +20,9 @@ ASAM Optimizer와 ANL (Adaptive Negative Learning)을 적용하여 라벨 노이
 ### 2. ANL (Adaptive Negative Learning)
 - **개념**
 	- `Positive Learning (PL)`: 정답 클래스 학습 (Cross Entropy)
-	-	`Negative Learning (NL)`: 모델이 높은 확률을 준 오답 클래스 학습
-	-	`Adaptive`: 혼동이 예상되는 클래스만 선택적으로 NL 수행
+	- `Negative Learning (NL)`: 모델이 높은 확률을 준 오답 클래스 학습
+	- `Adaptive`: 혼동이 예상되는 클래스만 선택적으로 NL 수행
+	- 노이즈 비율이 심할때 사용 권장
 - **하이퍼파라미터**
 	-	`--cost-type`: anl 선택
 	-	`--beta`: NL 비율 조정 (예: 0.1)
@@ -47,8 +48,8 @@ ASAM Optimizer와 ANL (Adaptive Negative Learning)을 적용하여 라벨 노이
   - `Custom-Co-Correcting`: 기본적인 Co-Correcting 학습
   - `Custom-Co-Correcting-Diversity`: Dual Network의 Diversity를 유도하여 학습
   - (Unsupervised Time Series Outlier Detection with Diversity-Driven Convolutional Ensembles—Extended Version 논문 참고)
-  - 기본적으로 `Custom-Co-Correcting` 사용 권장 (어느 정도 다양성 유지됨/후자는 개발 중)
-  
+  - 기본적으로 `Custom-Co-Correcting` 사용 권장 (어느 정도 다양성 유지됨 / 후자는 개발 중)
+
 ---
 
 ## 설치 및 요구사항
