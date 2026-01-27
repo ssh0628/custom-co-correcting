@@ -19,6 +19,7 @@
 --optim ASAM --rho 0.5 --eta 0.01
 ```
 
+
 ### 2. ANL (Adaptive Negative Learning)
 - **개념**
 	- `Positive Learning (PL)`: 정답 클래스 학습 (Cross Entropy)
@@ -33,6 +34,7 @@
 --cost-type anl --beta 0.1
 ```
 
+
 ### 3. Image Aware Crop & Resize (new_PetSkin)
 - **개념**
 	- ROI(병변) 중심으로 주변 Context 포함 224x224 크기로 Crop
@@ -43,6 +45,7 @@
 - **하이퍼파라미터**
 	- 없음, ROI 기반 자동 처리
 
+
 ### 4. Co-Correcting
 - **개념**
 	- 기본적으로 Dual Network의 agreement를 기반으로 학습
@@ -51,6 +54,7 @@
   - `Custom-Co-Correcting-Diversity`: Dual Network의 Diversity를 유도하여 학습
   - (Unsupervised Time Series Outlier Detection with Diversity-Driven Convolutional Ensembles—Extended Version 논문 참고)
   - 기본적으로 `Custom-Co-Correcting` 사용 권장 (어느 정도 다양성 유지됨 / 후자는 개발 중)
+
 
 ---
 
@@ -95,6 +99,7 @@ chmod +x scripts/mydatasets.sh
 ./scripts/mydatasets.sh
 ```
 - 학습 하이퍼 파라미터가 많으니, 스크립트 실행 추천
+
 
 2. 학습 커맨드 예시
 
