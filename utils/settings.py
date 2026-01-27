@@ -188,8 +188,8 @@ def get_args():
                     help='path to latest checkpoint (default: none)')
 
     # ConvNext settings
-    parser.add_argument('--drop-path-rate', dest='drop_path_rate', default=0.2, type=float,
-                        metavar='N', help='drop path rate, default 0.2')
+    parser.add_argument('--drop-path-rate', dest='drop_path_rate', default=0.1, type=float,
+                        metavar='N', help='drop path rate, default 0.1')
     parser.add_argument("--convnext", dest="convnext", default="convnextv2_tiny.fcmae_ft_in22k_in1k", type=str,
                         help="use convnext, default convnextv2_tiny.fcmae_ft_in22k_in1k")
 

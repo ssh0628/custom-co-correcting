@@ -12,7 +12,6 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from sklearn.decomposition import PCA
-
 from utils.settings import get_args
 from utils.label_checker import check_label
 from utils.curriculum_clustering import CurriculumClustering
@@ -39,59 +38,72 @@ class CoCorrecting(BasicTrainer, Loss):
             prepare optim, loss func (최적화 도구 및 손실 함수 준비)
         """
         # 상호 학습을 위한 모델 초기화 (동일한 구조의 모델 A, B 생성)
-        # [Design Constraint A] Random Seed 처리
-        # 두 네트워크는 서로 다른 Seed로 초기화하여 초기 Weight를 다르게 가져간다.
-        # 단, 이후 데이터 로더는 동일한 Seed를 사용하여 "Same Data, Different Initial Weights" 조건을 만족시킨다.
-        
+
         # Model A Initialization (Seed: Base)
         if self.args.random_seed is not None:
             torch.manual_seed(self.args.random_seed)
-            # torch.cuda.manual_seed_all(self.args.random_seed) # If needed for complete determinism
+            # torch.cuda.manual_seed_all(self.args.random_seed)
         self.modelA = self._get_model(self.args.backbone)
         
         # Model B Initialization (Seed: Base + 1)
         if self.args.random_seed is not None:
-            torch.manual_seed(self.args.random_seed + 1)
+            torch.manual_seed(self.args.random_seed)
+            # torch.manual_seed(self.args.random_seed + 1)
             # torch.cuda.manual_seed_all(self.args.random_seed + 1)
         self.modelB = self._get_model(self.args.backbone)
 
-        # Reset Seed for DataLoader (Seed: Base)
-        # 중요: 데이터 로더의 순서는 동일해야 하므로 Base Seed로 복구한다.
+        # 데이터 로더의 순서는 동일해야 하므로 Base Seed로 복구
         if self.args.random_seed is not None:
             torch.manual_seed(self.args.random_seed)
             # torch.cuda.manual_seed_all(self.args.random_seed)
 
         self.modelC = self._get_model(self.args.backbone)
-        # Optimizer & Criterion (최적화 함수 및 기준)
 
+        # freeze all layers except head
+        for name, param in self.modelA.named_parameters():
+            if "head" not in name:
+                param.requires_grad = False
+        for name, param in self.modelB.named_parameters():
+            if "head" not in name:
+                param.requires_grad = False
+        
+        # Optimizer & Criterion (최적화 함수 및 기준)
         self.criterion = torch.nn.CrossEntropyLoss().to(self.args.device)
         self.logsoftmax = nn.LogSoftmax(dim=1).to(self.args.device)
         self.softmax = nn.Softmax(dim=1).to(self.args.device)
+
         # ASAM은 기본 옵티마이저(SGD 등)를 감싸서 동작하므로, 
-        # 초기화 시에는 SGD로 생성한 후 ASAM으로 래핑합니다.
-        base_optim = 'SGD' if self.args.optim == 'ASAM' else self.args.optim
-        self.optimizerA = self._get_optim(self.modelA.parameters(), optim=base_optim)
-        self.optimizerB = self._get_optim(self.modelB.parameters(), optim=base_optim)
-        
+        # 초기화 시에는 SGD로 생성한 후 ASAM으로 래핑
         # ASAM Optimizer Wrapping
         if self.args.optim == 'ASAM':
             print("Initializing ASAM Optimizer...")
             # ASAM은 Base Optimizer(SGD 등)를 감싸서 동작함
-            # args.rho, args.eta 등 하이퍼파라미터 필요 (settings.py에 있다고 가정하거나 기본값 사용)
             rho = getattr(self.args, 'rho', 0.5)
             eta = getattr(self.args, 'eta', 0.01)
+            
+            # 1. Base Optimizer (SGD) 생성
+            self.optimizerA = self._get_optim(self.modelA.parameters(), optim='SGD')
+            self.optimizerB = self._get_optim(self.modelB.parameters(), optim='SGD')
+            
+            # 2. Wrap with ASAM
             self.optimizerA = ASAM(self.optimizerA, self.modelA, rho=rho, eta=eta)
             self.optimizerB = ASAM(self.optimizerB, self.modelB, rho=rho, eta=eta)
+        else:
+            # Normal Optimizer check
+            self.optimizerA = self._get_optim(self.modelA.parameters(), optim=self.args.optim)
+            self.optimizerB = self._get_optim(self.modelB.parameters(), optim=self.args.optim)
 
+        # Cosine Scheduler
         if self.args.scheduler == "Cosine":
-            self.schedulerA = CosineAnnealingLR(self.optimizerA, T_max=self.args.epochs, eta_min=1e-6)
-            self.schedulerB = CosineAnnealingLR(self.optimizerB, T_max=self.args.epochs, eta_min=1e-6)
+            # Phase 1: lr -> lr2 (until Stage 1)
+            self.schedulerA = CosineAnnealingLR(self.optimizerA, T_max=self.args.stage1, eta_min=self.args.lr2)
+            self.schedulerB = CosineAnnealingLR(self.optimizerB, T_max=self.args.stage1, eta_min=self.args.lr2)
         
         # 체크 포인트 불러오기
-        if args.resume:
-            if os.path.isfile(args.resume):
-                print(f"=> loading checkpoint '{args.resume}'")
-                checkpoint = torch.load(args.resume)
+        if self.args.resume:
+            if os.path.isfile(self.args.resume):
+                print(f"=> loading checkpoint '{self.args.resume}'")
+                checkpoint = torch.load(self.args.resume)
                 self.start_epoch = checkpoint['epoch']
                 
                 self.modelA.load_state_dict(checkpoint['state_dict_A'])
@@ -129,6 +141,23 @@ class CoCorrecting(BasicTrainer, Loss):
         print("=> loaded checkpoint '{}' (epoch {})"
               .format(self.args.checkpoint_dir, checkpoint['epoch']))
 
+        epoch = self.args.start_epoch
+        if epoch < self.args.stage1:
+            # Stage 1: backbone freeze
+            print("=> Resume: Stage 1 (Backbone Frozen)")
+            for model in [self.modelA, self.modelB]:
+                for name, p in model.named_parameters():
+                    if "head" not in name:
+                        p.requires_grad = False
+                    else:
+                        p.requires_grad = True
+        else:
+            # Stage 2 이후: backbone unfreeze
+            print("=> Resume: Stage 2+ (Backbone Unfrozen)")
+            for model in [self.modelA, self.modelB]:
+                for p in model.parameters():
+                    p.requires_grad = True
+
         # load record_dict
         if os.path.isfile(self.args.record_dir):
             print("=> loading record file {}".format(self.args.record_dir))
@@ -165,6 +194,11 @@ class CoCorrecting(BasicTrainer, Loss):
             json.dump(self.record_dict, f, indent=4, sort_keys=True)
 
     # define drop rate schedule
+    def _update_drop_path(self, model, drop_path_rate):
+        for module in model.modules():
+            if 'DropPath' in module.__class__.__name__:
+                module.drop_prob = drop_path_rate
+
     def gen_forget_rate(self, forget_rate, fr_type='type_1'):
         if fr_type == 'type_1':
             rate_schedule = np.ones(args.n_epoch) * forget_rate
@@ -198,8 +232,6 @@ class CoCorrecting(BasicTrainer, Loss):
 
     def _adjust_learning_rate(self, epoch):
         """Sets the learning rate"""
-        # 학습률(Learning Rate) 스케줄링 함수
-        # Stage 2 이후부터 학습률을 점진적으로 감소시킴
         if epoch < self.args.stage2:
             lr = self.args.lr
         elif epoch < (self.args.epochs - self.args.stage2) // 3 + self.args.stage2:
@@ -216,12 +248,7 @@ class CoCorrecting(BasicTrainer, Loss):
     def _compute_loss(self, outputA, outputB, target, target_var, index, epoch, i, parallel=False):
         # 손실 계산 함수 (핵심 로직)
         
-        # 1. Warm Up 단계 (Stage 1 이전)
-        # - Loss: Cross Entropy Only
-        # - Forget-rate: 0 (No forgetting)
-        # - Filtering: None (All samples used)
-        # - Drop Path: 0 (Handled in training loop)
-        # - Disagreement: Not used
+        # Warm Up 단계
         if epoch < self.args.stage1:
             # y_tilde 초기화: 초반에는 주어진 라벨(target)을 그대로 사용
             onehot = torch.zeros(
@@ -259,7 +286,7 @@ class CoCorrecting(BasicTrainer, Loss):
             return lossA, lossB, onehot, onehot, ind_A_discard, ind_B_discard, ind_A_update, ind_B_update, \
                    pure_ratio_1, pure_ratio_2, pure_ratio_discard_1, pure_ratio_discard_2
         
-        # 2. Label Correction 단계 (Stage 1 ~ Stage 2)
+        # Label Correction 단계 (Stage 1 ~ Stage 2)
         # - PENCIL 손실 함수 사용: 라벨 분포(y_tilde)를 학습 통해 업데이트
         elif epoch < self.args.stage2:
             # selection 된 데이터만 파라미터 업데이트, 나머지는 라벨만 업데이트
@@ -289,7 +316,7 @@ class CoCorrecting(BasicTrainer, Loss):
             return lossA, lossB, yy_A, yy_B, ind_A_discard, ind_B_discard, ind_A_update, ind_B_update, \
                    pure_ratio_1, pure_ratio_2, pure_ratio_discard_1, pure_ratio_discard_2
         
-        # 3. Fine Tuning 단계 (Stage 2 이후)
+        # Fine Tuning 단계 (Stage 2 이후)
         # - 수정된 라벨을 바탕으로 최종 미세 조정
         else:
             yy_A = self.yy
@@ -502,16 +529,6 @@ class CoCorrecting(BasicTrainer, Loss):
                 update_stage += 1
         return update_stage
 
-    def _update_drop_path(self, model, drop_path_rate):
-        """
-        Recursively update DropPath rate in timm-based models (e.g. ConvNeXt, ViT)
-        """
-        for module in model.modules():
-            # timm.models.layers.DropPath check by name or type
-            if module.__class__.__name__ == 'DropPath':
-                module.drop_prob = drop_path_rate
-
-
     def training(self):
         # 전체 학습 루프 실행 함수
         timer = AverageMeter()
@@ -520,35 +537,46 @@ class CoCorrecting(BasicTrainer, Loss):
         for epoch in range(self.args.start_epoch, self.args.epochs):
             print('-----------------')
             
-            # [Design Constraint B] Drop Path Rate Scheduling
-            # Stage 0 (Warm-up): 0.0 (Stochasticity 제거하여 초기 학습 안정화)
-            # Stage 1+: 0.0 -> args.drop_path_rate (점진적 증가)
-            # ============================
-            # Drop Path Scheduler
-            # ============================
+            # unfreeze
+            if epoch == self.args.stage1:
+                print(f"Epoch {epoch} | Backbone Unfreeze")
+                for name, param in self.modelA.named_parameters():
+                    if "head" not in name: param.requires_grad = True
+                for name, param in self.modelB.named_parameters():
+                    if "head" not in name: param.requires_grad = True
 
-            if epoch < self.args.warmup:
+                if self.args.optim == 'ASAM':
+                    rho = getattr(self.args, 'rho', 0.5)
+                    eta = getattr(self.args, 'eta', 0.01)
+                    
+                    self.optimizerA = self._get_optim(self.modelA.parameters(), optim='SGD')
+                    self.optimizerB = self._get_optim(self.modelB.parameters(), optim='SGD')
+                    
+                    self.optimizerA = ASAM(self.optimizerA, self.modelA, rho=rho, eta=eta)
+                    self.optimizerB = ASAM(self.optimizerB, self.modelB, rho=rho, eta=eta)
+                else:
+                    self.optimizerA = self._get_optim(self.modelA.parameters(), optim=self.args.optim)
+                    self.optimizerB = self._get_optim(self.modelB.parameters(), optim=self.args.optim)
+
+                for pg in self.optimizerA.param_groups: pg['lr'] = self.args.lr2
+                for pg in self.optimizerB.param_groups: pg['lr'] = self.args.lr2
+
+                if self.args.scheduler == "Cosine":
+                    remain = self.args.epochs - epoch
+                    self.schedulerA = CosineAnnealingLR(self.optimizerA, T_max=remain, eta_min=1e-6)
+                    self.schedulerB = CosineAnnealingLR(self.optimizerB, T_max=remain, eta_min=1e-6)
+            
+            if self.args.warmup > 0 and epoch < self.args.warmup:
                 drop_path_rate = 0.0
-            elif epoch < self.args.stage1:
-                min_drop_path_rate = 0.05
-                total_remaining = self.args.stage1 - self.args.warmup - 1
-                elapsed = epoch - self.args.warmup
-                drop_path_rate = min_drop_path_rate + (self.args.drop_path_rate - min_drop_path_rate) * (elapsed / total_remaining)
-            elif epoch < self.args.stage2:
-                drop_path_rate = self.args.drop_path_rate
             else:
                 drop_path_rate = self.args.drop_path_rate
 
-            # 모델에 적용
             self._update_drop_path(self.modelA, drop_path_rate)
             self._update_drop_path(self.modelB, drop_path_rate)
 
-            print(f"Epoch {epoch}: Current Drop Path Rate = {drop_path_rate:.6f}")
-
-            # LR Scheduler
             if self.args.scheduler == "Cosine":
-                self.schedulerA.step()
-                self.schedulerB.step()
+                if hasattr(self, 'schedulerA'): self.schedulerA.step()
+                if hasattr(self, 'schedulerB'): self.schedulerB.step()
             else:
                 self._adjust_learning_rate(epoch)
 
@@ -696,9 +724,7 @@ class CoCorrecting(BasicTrainer, Loss):
                 outputA_adv = self.modelA(input_var)
                 
                 # Loss 재계산: Selection은 이전 단계의 indices 재사용 (ind_B_update: B가 선택한 샘플로 A 학습)
-                # 주의: Co-teaching 로직상 A의 loss는 "B가 선택한 샘플"에 의해 계산됨.
-                # lossA was calculated using ind_2_update (which is ind_B_update)
-                
+            
                 # Stage별 Loss Type 결정
                 if epoch < self.args.stage1:
                     l_type = self.args.cost_type
@@ -1059,7 +1085,8 @@ def accuracy(output, target, topk=(1,)):
 
     res = []
     for k in topk:
-        correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True) # 원래는 reshape가 아니라 view였음
+        # 원래는 reshape가 아니라 view였음
+        correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
         res.append(correct_k.mul_(100.0 / batch_size))
     return res
 

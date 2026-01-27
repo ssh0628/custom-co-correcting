@@ -1,7 +1,7 @@
 #!/bin/bash
 
 DATA_ROOT="/root/project/dataset/dataset"
-BEST_GRADUAL=15
+BEST_GRADUAL=5
 BEST_FR=0.05
 ALPHA=0.3
 WEIGHT_DECAY=0.1

@@ -48,19 +48,24 @@ class CoCorrecting(BasicTrainer, Loss):
         self.softmax = nn.Softmax(dim=1).to(self.args.device)
         # ASAM은 기본 옵티마이저(SGD 등)를 감싸서 동작하므로, 
         # 초기화 시에는 SGD로 생성한 후 ASAM으로 래핑합니다.
-        base_optim = 'SGD' if self.args.optim == 'ASAM' else self.args.optim
-        self.optimizerA = self._get_optim(self.modelA.parameters(), optim=base_optim)
-        self.optimizerB = self._get_optim(self.modelB.parameters(), optim=base_optim)
-        
         # ASAM Optimizer Wrapping
         if self.args.optim == 'ASAM':
             print("Initializing ASAM Optimizer...")
             # ASAM은 Base Optimizer(SGD 등)를 감싸서 동작함
-            # args.rho, args.eta 등 하이퍼파라미터 필요 (settings.py에 있다고 가정하거나 기본값 사용)
             rho = getattr(self.args, 'rho', 0.5)
             eta = getattr(self.args, 'eta', 0.01)
+            
+            # 1. Base Optimizer (SGD) 생성
+            self.optimizerA = self._get_optim(self.modelA.parameters(), optim='SGD')
+            self.optimizerB = self._get_optim(self.modelB.parameters(), optim='SGD')
+            
+            # 2. Wrap with ASAM
             self.optimizerA = ASAM(self.optimizerA, self.modelA, rho=rho, eta=eta)
             self.optimizerB = ASAM(self.optimizerB, self.modelB, rho=rho, eta=eta)
+        else:
+            # Normal Optimizer check
+            self.optimizerA = self._get_optim(self.modelA.parameters(), optim=self.args.optim)
+            self.optimizerB = self._get_optim(self.modelB.parameters(), optim=self.args.optim)
         
         # 체크 포인트 불러오기
         if args.resume:
