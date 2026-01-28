@@ -142,7 +142,7 @@ class CoCorrecting(BasicTrainer, Loss):
               .format(self.args.checkpoint_dir, checkpoint['epoch']))
 
         epoch = self.args.start_epoch
-        if epoch < self.args.stage1:
+        if epoch < self.args.warmup:
             # Stage 1: backbone freeze
             print("=> Resume: Stage 1 (Backbone Frozen)")
             for model in [self.modelA, self.modelB]:
@@ -538,7 +538,7 @@ class CoCorrecting(BasicTrainer, Loss):
             print('-----------------')
             
             # unfreeze
-            if epoch == self.args.stage1:
+            if epoch == self.args.warmup:
                 print(f"Epoch {epoch} | Backbone Unfreeze")
                 for name, param in self.modelA.named_parameters():
                     if "head" not in name: param.requires_grad = True

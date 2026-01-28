@@ -146,7 +146,7 @@ class CoCorrecting(BasicTrainer, Loss):
               .format(self.args.checkpoint_dir, checkpoint['epoch']))
 
         epoch = self.args.start_epoch
-        if epoch < self.args.stage1:
+        if epoch < self.args.warmup:
             # Stage 1: backbone freeze
             print("=> Resume: Stage 1 (Backbone Frozen)")
             for model in [self.modelA, self.modelB]:
@@ -588,7 +588,7 @@ class CoCorrecting(BasicTrainer, Loss):
             print('-----------------')
             
             # unfreeze
-            if epoch == self.args.stage1:
+            if epoch == self.args.warmup:
                 print(f"{epoch} unfreeze")
                 for name, param in self.modelA.named_parameters():
                     if "head" not in name: param.requires_grad = True
@@ -767,19 +767,31 @@ class CoCorrecting(BasicTrainer, Loss):
                     last_y_var_A = self.softmax(yy_A)
                     last_y_var_B = self.softmax(yy_B)
                 
+                # [Diversity Loss for Adv Step]
+                # 0. Determine Lambda (Common for A and B)
+                current_lambda = 0.0
+                if epoch < self.args.warmup:
+                    current_lambda = self.args.diversity_lambda_warmup
+                elif epoch < self.args.stage1:
+                    current_lambda = self.args.diversity_lambda_stage1
+                elif epoch < self.args.stage2:
+                    current_lambda = self.args.diversity_lambda_stage2
+                else: 
+                    current_lambda = self.args.diversity_lambda_finetune
+
                 # 1. Update Model A
                 self.optimizerA.zero_grad()
                 lossA.backward() 
                 self.optimizerA.ascent_step()
 
                 # Re-compute Loss A (Adv)
-                # Ascent된 가중치로 다시 Forward
                 outputA_adv = self.modelA(input_var)
                 
-                # Loss 재계산: Selection은 이전 단계의 indices 재사용 (ind_B_update: B가 선택한 샘플로 A 학습)
-                # 주의: Co-teaching 로직상 A의 loss는 "B가 선택한 샘플"에 의해 계산됨.
-                # lossA was calculated using ind_2_update (which is ind_B_update)
-                
+                # [Diversity Loss Calculation for A]
+                probA_adv = self.softmax(outputA_adv)
+                probB_detached = probB.detach() # B is not updated yet
+                diversity_loss_adv_A = torch.mean(torch.sum((probA_adv - probB_detached)**2, dim=1))
+
                 # Stage별 Loss Type 결정
                 if epoch < self.args.stage1:
                     l_type = self.args.cost_type
@@ -787,13 +799,15 @@ class CoCorrecting(BasicTrainer, Loss):
                     adv_lossA = self._get_loss(outputA_adv[ind_B_update], target_var[ind_B_update], loss_type=l_type, beta=self.args.beta)
                 elif epoch < self.args.stage2:
                     # Stage 2: Target is Soft Label (yy_A -> last_y_var_A)
-                    # last_y_var_A는 Softmax(yy_A)임.
                     adv_lossA = self._get_loss(outputA_adv[ind_B_update], last_y_var_A[ind_B_update], 
                                                alpha=self.args.alpha, beta=self.args.beta, loss_type='PENCIL', target_var=target_var[ind_B_update])
                 else:
                     # Stage 3: Fine-tuning
                     adv_lossA = self._get_loss(outputA_adv[ind_B_update], last_y_var_A[ind_B_update], loss_type='PENCIL_KL')
                 
+                # Subtract Diversity Loss
+                adv_lossA -= current_lambda * diversity_loss_adv_A
+
                 # adv_lossA는 mean reduction 되어 있음 (get_loss 기본값)
                 # backward
                 adv_lossA.backward()
@@ -807,6 +821,11 @@ class CoCorrecting(BasicTrainer, Loss):
                 # Re-compute Loss B (Adv)
                 outputB_adv = self.modelB(input_var)
                 
+                # [Diversity Loss Calculation for B]
+                probB_adv = self.softmax(outputB_adv)
+                probA_detached = probA.detach() # Use original A (consistency)
+                diversity_loss_adv_B = torch.mean(torch.sum((probA_detached - probB_adv)**2, dim=1))
+
                 if epoch < self.args.stage1:
                     l_type = self.args.cost_type
                     adv_lossB = self._get_loss(outputB_adv[ind_A_update], target_var[ind_A_update], loss_type=l_type, beta=self.args.beta)
@@ -815,6 +834,9 @@ class CoCorrecting(BasicTrainer, Loss):
                                                alpha=self.args.alpha, beta=self.args.beta, loss_type='PENCIL', target_var=target_var[ind_A_update])
                 else:
                     adv_lossB = self._get_loss(outputB_adv[ind_A_update], last_y_var_B[ind_A_update], loss_type='PENCIL_KL')
+
+                # Subtract Diversity Loss
+                adv_lossB -= current_lambda * diversity_loss_adv_B
 
                 adv_lossB.backward()
                 self.optimizerB.descent_step()

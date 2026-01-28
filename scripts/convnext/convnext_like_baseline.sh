@@ -9,15 +9,15 @@ LAMBDA=400
 # should be changed
 BEST_GRADUAL=10
 WARMUP=10
-STAGE1=30
-STAGE2=70
-EPOCH=150
+STAGE1=40
+STAGE2=100
+EPOCH=200
 # ======================================
 
 
 DATA_ROOT="/root/project/dataset/dataset"
-WEIGHT_DECAY=0.01 # baseline
-DROP_PATH_RATE=0.1
+WEIGHT_DECAY=0.05 # baseline
+DROP_PATH_RATE=0.2
 SEED=42
 
 EXP_NAME="convnext_like_baseline"

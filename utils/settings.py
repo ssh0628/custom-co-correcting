@@ -86,7 +86,7 @@ def get_args():
     parser.add_argument('--rho', default=0.5, type=float,
                         help='ASAM의 rho 파라미터 (Ascent Step 크기).')
     parser.add_argument('--eta', default=0.01, type=float,
-                        help='ASAM의 eta 파라미터 (스무딩 관련).')
+                        help='ASAM의 eta 파라미터 (스무딩 관련). 논문에서 0.01로 고정')
     
     # Co-teaching 파라미터 (라벨 노이즈 처리를 위한 핵심 설정)
     """
