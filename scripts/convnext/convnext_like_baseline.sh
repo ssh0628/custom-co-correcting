@@ -49,6 +49,41 @@ python custom-co-correcting.py --dir experiment/convnext/${EXP_NAME} \
     --lambda1 ${LAMBDA} \
     --random-seed ${SEED}
 
+echo "========================================================"
+echo "Finished: ConvNeXt | Seed=${SEED} | Optim=AdamW | Scheduler=Cosine"
+echo "Saved Directory: experiment/convnext/${EXP_NAME}"
+echo "========================================================"
+
+
+
+EXP_NAME="convnext_like_baseline_WD2e-2"
+echo "========================================================"
+echo "Running: ConvNeXt | Seed=${SEED} | Optim=AdamW | Scheduler=Cosine"
+echo "Save Directory: experiment/convnext/${EXP_NAME}"
+echo "========================================================"
+
+python custom-co-correcting.py --dir experiment/convnext/${EXP_NAME} \
+    --backbone convnext \
+    --dataset petskin \
+    --dataRoot ${DATA_ROOT} \
+    --noise_type clean --noise 0.0 \
+    --optim AdamW \
+    --scheduler Cosine \
+    --weight-decay 0.02 \
+    --epochs ${EPOCH} \
+    --batch-size 256 \
+    --workers 16 \
+    --lr 0.001 \
+    --lr2 0.00003 \
+    --drop-path-rate ${DROP_PATH_RATE} \
+    --stage1 ${STAGE1} \
+    --stage2 ${STAGE2} \
+    --warmup ${WARMUP} \
+    --num-gradual ${BEST_GRADUAL} \
+    --forget-rate ${BEST_FR} \
+    --alpha ${ALPHA} \
+    --lambda1 ${LAMBDA} \
+    --random-seed ${SEED}
 
 echo "========================================================"
 echo "Finished: ConvNeXt | Seed=${SEED} | Optim=AdamW | Scheduler=Cosine"

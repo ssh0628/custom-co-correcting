@@ -99,9 +99,9 @@ class CoCorrecting(BasicTrainer, Loss):
             self.optimizerB = self._get_optim(self.modelB.parameters(), optim=self.args.optim)
 
         if self.args.scheduler == "Cosine":
-            # Phase 1: lr -> lr2 (until Stage 1)
-            self.schedulerA = CosineAnnealingLR(self.optimizerA, T_max=self.args.stage1, eta_min=self.args.lr2)
-            self.schedulerB = CosineAnnealingLR(self.optimizerB, T_max=self.args.stage1, eta_min=self.args.lr2)
+            # Warmup 기간 동안: Backbone Freeze & Head Training (LR: 1e-3 -> 1e-6)
+            self.schedulerA = CosineAnnealingLR(self.optimizerA, T_max=self.args.warmup, eta_min=1e-6)
+            self.schedulerB = CosineAnnealingLR(self.optimizerB, T_max=self.args.warmup, eta_min=1e-6)
         
         # 체크 포인트 불러오기
         if args.resume:

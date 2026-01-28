@@ -126,8 +126,8 @@ python train.py \
 |--dataset | 사용할 데이터셋 이름 | petskin |
 |--dataRoot | 데이터셋 루트 경로 | ./PetSkin |
 |--optim | 최적화 방법 | ASAM (권장)|
-|--rho | ASAM sharpness radius | 0.5 (권장)|
-|--eta | ASAM step size | 0.01 (권장)|
+|--rho | ASAM sharpness radius | 별도 조정 |
+|--eta | ASAM step size | 0.01 (고정, 권장)|
 |--cost-type | 손실 함수 선택 (CE, anl) | CE (권장)|
 |--beta | ANL Negative Learning 비율 | 0.1 (권장)|
 |--forget-type | Co-Correcting 샘플 선택 전략 | coteaching_plus (권장) |

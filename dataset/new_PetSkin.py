@@ -165,10 +165,43 @@ class PetSkin(torch.utils.data.Dataset):
     def pad_reflection(self, img, pad_l, pad_t, pad_r, pad_b):
         """
         Applies reflection padding using PIL.
-        Strategy: Pad Horizontally first, then Vertically to handle corners naturally.
+        Strategy: Pad Horizontally first, then Vertically.
+        Robustness: Handles cases where pad size > image size by tiling (repeating) the image first.
         """
         w, h = img.size
         
+        # Helper: Robust Reflection for Single Side
+        def get_reflection(src_img, size, axis):
+            # axis: 0 for horizontal (mirror left/right), 1 for vertical (flip top/bottom)
+            # If size > src_img dimension, tile first
+            src_w, src_h = src_img.size
+            dim = src_w if axis == 0 else src_h
+            
+            if size > dim:
+                # Tile the image to be large enough
+                reps = (size // dim) + 2
+                if axis == 0:
+                    tiled = Image.new(src_img.mode, (src_w * reps, src_h))
+                    for i in range(reps):
+                        tiled.paste(src_img, (i * src_w, 0))
+                else:
+                    tiled = Image.new(src_img.mode, (src_w, src_h * reps))
+                    for i in range(reps):
+                        tiled.paste(src_img, (0, i * src_h))
+                src_img = tiled
+                # Update dimensions
+                src_w, src_h = src_img.size
+
+            # Now perform reflection crop
+            if axis == 0: # Horizontal
+                strip = src_img.crop((0, 0, size, src_h)) # Crop 'size' width from left
+                reflected = ImageOps.mirror(strip)
+                return reflected
+            else: # Vertical
+                strip = src_img.crop((0, 0, src_w, size)) # Crop 'size' height from top
+                reflected = ImageOps.flip(strip)
+                return reflected
+
         # 1. Horizontal Padding
         if pad_l > 0 or pad_r > 0:
             new_w = w + pad_l + pad_r
@@ -176,23 +209,40 @@ class PetSkin(torch.utils.data.Dataset):
             h_img.paste(img, (pad_l, 0))
             
             if pad_l > 0:
-                # Mirror left strip
-                left_strip = img.crop((0, 0, min(w, pad_l), h))
-                left_pad = ImageOps.mirror(left_strip)
-                if left_pad.width < pad_l:
-                    left_pad = left_pad.resize((pad_l, h), Image.NEAREST) # Stretch fallback if tiny image
+                # Mirror left logic: Use left side of image to reflect
+                # To reflect left, we validly crop from the *start* of the image (0 to pad_l)
+                # But if we want symmetry, usually we take 0 to pad_l and mirror it.
+                left_pad = get_reflection(img, pad_l, axis=0)
+                # If generated reflection is wider than needed (due to tiling logic simplification), crop it
+                if left_pad.width > pad_l:
+                    left_pad = left_pad.crop((left_pad.width - pad_l, 0, left_pad.width, h))
                 h_img.paste(left_pad, (0, 0))
                 
             if pad_r > 0:
-                # Mirror right strip
-                right_strip = img.crop((w - min(w, pad_r), 0, w, h))
+                # Mirror right logic: Use right side of image.
+                # To simplify, we can flip the image horizontally, use get_reflection (which mirrors left), and flip back?
+                # Or just robustly crop from right.
+                # Let's use simple logic: rotate 180 or flip LR then use same logic?
+                # Easier: just crop the rightmost 'pad_r' pixels.
+                
+                # Handling pad_r > w
+                right_src = img
+                if pad_r > w:
+                     # Tile if needed
+                     reps = (pad_r // w) + 2
+                     tiled = Image.new(img.mode, (w * reps, h))
+                     for i in range(reps):
+                        tiled.paste(img, (i * w, 0))
+                     right_src = tiled
+                
+                # Crop last 'pad_r' pixels
+                rw, rh = right_src.size
+                right_strip = right_src.crop((rw - pad_r, 0, rw, rh))
                 right_pad = ImageOps.mirror(right_strip)
-                if right_pad.width < pad_r:
-                    right_pad = right_pad.resize((pad_r, h), Image.NEAREST)
                 h_img.paste(right_pad, (pad_l + w, 0))
             
             img = h_img
-            w = new_w # Update width for vertical step
+            w = new_w # Update width
 
         # 2. Vertical Padding
         if pad_t > 0 or pad_b > 0:
@@ -201,19 +251,25 @@ class PetSkin(torch.utils.data.Dataset):
             v_img.paste(img, (0, pad_t))
             
             if pad_t > 0:
-                # Flip top strip
-                top_strip = img.crop((0, 0, w, min(h, pad_t)))
-                top_pad = ImageOps.flip(top_strip)
-                if top_pad.height < pad_t:
-                    top_pad = top_pad.resize((w, pad_t), Image.NEAREST)
+                # Top padding
+                top_pad = get_reflection(img, pad_t, axis=1)
+                if top_pad.height > pad_t:
+                    top_pad = top_pad.crop((0, top_pad.height - pad_t, w, top_pad.height))
                 v_img.paste(top_pad, (0, 0))
                 
             if pad_b > 0:
-                # Flip bottom strip
-                bottom_strip = img.crop((0, h - min(h, pad_b), w, h))
+                # Bottom padding
+                bottom_src = img
+                if pad_b > h:
+                    reps = (pad_b // h) + 2
+                    tiled = Image.new(img.mode, (w, h * reps))
+                    for i in range(reps):
+                        tiled.paste(img, (0, i * h))
+                    bottom_src = tiled
+                
+                bh_w, bh_h = bottom_src.size
+                bottom_strip = bottom_src.crop((0, bh_h - pad_b, bh_w, bh_h))
                 bottom_pad = ImageOps.flip(bottom_strip)
-                if bottom_pad.height < pad_b:
-                    bottom_pad = bottom_pad.resize((w, pad_b), Image.NEAREST)
                 v_img.paste(bottom_pad, (0, pad_t + h))
                 
             img = v_img
