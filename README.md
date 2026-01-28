@@ -13,7 +13,7 @@
 - **하이퍼파라미터**
   - `--optim`: `ASAM` 선택
   - `--rho`: sharpness radius (예: 0.5)
-  - `--eta`: step size (예: 0.01)
+  - `--eta`: step size (예: 0.01, 고정 권장)
 - **사용법**
 ```bash
 --optim ASAM --rho 0.5 --eta 0.01
