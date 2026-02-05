@@ -13,9 +13,8 @@ from sklearn.utils import check_array, check_consistent_length, gen_batches
 def cluster_curriculum_subsets(X, y, n_subsets=3, method='default', density_t=0.6, verbose=False,
                                dim_reduce=256, batch_max=10000, random_state=None, calc_auxiliary=False):
     """
-    CurriculumNet 클러스터링 함수
-    - 데이터의 밀도(Density)를 기반으로 학습 난이도별 서브셋(Subset)을 생성합니다.
-    - 고밀도 영역(Clean) -> 저밀도 영역(Noisy/Hard) 순으로 클러스터링
+    CurriculumNet Clustering (by density).
+    High Density (Clean) -> Low Density (Noisy/Hard)
     """
 
     if not density_t > 0.0:
@@ -30,15 +29,14 @@ def cluster_curriculum_subsets(X, y, n_subsets=3, method='default', density_t=0.
     if X.shape[1] > dim_reduce:
         pca = PCA(n_components=dim_reduce, copy=False, random_state=random_state)
 
-    # Initialize all labels as negative one which represents un-clustered 'noise'.
-    # Post-condition: after clustering, there should be no negatives in the label output.
+    # Init: -1 = un-clustered/noise.
     all_clustered_labels = np.full(len(y), -1, dtype=np.intp)
 
     for cluster_idx, current_category in enumerate(unique_categories):
         if verbose:
             t0 = time.time()
 
-        # Collect the "learning material" for this particular category
+        # Collect samples for category
         dist_list = [i for i, label in enumerate(y) if label == current_category]
 
         for batch_range in gen_batches(len(dist_list), batch_size=batch_max):
@@ -50,7 +48,7 @@ def cluster_curriculum_subsets(X, y, n_subsets=3, method='default', density_t=0.
             for subset_idx, global_idx in enumerate(batch_dist_list):
                 subset_vectors[subset_idx, :] = X[global_idx, :]
 
-            # Calc distances
+            # Calculate distances
             print("PCA process... ")
             if pca:
                 subset_vectors = pca.fit_transform(subset_vectors)
@@ -58,7 +56,7 @@ def cluster_curriculum_subsets(X, y, n_subsets=3, method='default', density_t=0.
             t = np.square(subset_vectors).sum(axis=1)
             distance = np.sqrt(np.abs(-2 * m + t + np.transpose(np.array([t]))))
 
-            # Calc densities
+            # Calculate densities
             print("Calc densities")
             if method == 'gaussian':
                 densities = np.zeros((len(subset_vectors)), dtype=np.float32)
@@ -75,7 +73,7 @@ def cluster_curriculum_subsets(X, y, n_subsets=3, method='default', density_t=0.
                 raise ValueError("Cannot cluster into {} subsets due to lack of density diversification,"
                                  " please try a smaller n_subset number.".format(n_subsets))
 
-            # Optionally, calc auxiliary info
+            # Calculate auxiliary info
             print("calc auxiliary info")
             if calc_auxiliary:
                 # Calculate deltas
@@ -86,7 +84,7 @@ def cluster_curriculum_subsets(X, y, n_subsets=3, method='default', density_t=0.
                     larger = larger[np.where(larger != densities_sort_idx[i])]  # remove itself
                     deltas[i] = np.min(distance[densities_sort_idx[i], larger])
 
-                # Find the centers and package
+                # Find centers
                 center_id = np.argmax(densities)
                 center_delta = np.max(distance[np.argmax(densities)])
                 center_density = densities[center_id]
@@ -104,14 +102,14 @@ def cluster_curriculum_subsets(X, y, n_subsets=3, method='default', density_t=0.
             cluster_mins = [np.min(c) for c in clusters]
             bound = np.sort(np.array(cluster_mins))
 
-            # Distribute into curriculum subsets, and package into global adjusted returnable array, optionally aux too
+            # Assign curriculum subsets
             other_bounds = range(n_subsets - 1)
             for i in range(len(densities)):
 
-                # Check if the most 'clean'
+                # Check if 'clean'
                 if densities[i] >= bound[n_subsets - 1]:
                     all_clustered_labels[batch_dist_list[i]] = 0
-                # Else, check the others
+                # Else, check others
                 else:
                     for j in other_bounds:
                         if bound[j] <= densities[i] < bound[j + 1]:

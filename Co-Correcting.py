@@ -23,11 +23,10 @@ from BasicTrainer import BasicTrainer
 
 class CoCorrecting(BasicTrainer, Loss):
     """
-    Train Co-Pencil Method
-    
-    Co-Correcting (또는 Co-Pencil) 학습 클래스
-    - BasicTrainer: 학습 환경 설정, 로깅, 모델 저장 등의 기본 기능 상속
-    - Loss: Co-teaching 및 PENCIL 손실 함수 계산 로직 상속
+    Co-Correcting (Co-Pencil) Training Class
+    Inherits:
+        BasicTrainer: Setup, logging, saving
+        Loss: Co-teaching / PENCIL loss logic
     """
 
     def __init__(self, args):
@@ -41,13 +40,11 @@ class CoCorrecting(BasicTrainer, Loss):
         self.modelA = self._get_model(self.args.backbone)
         self.modelB = self._get_model(self.args.backbone)
         self.modelC = self._get_model(self.args.backbone)
-        # Optimizer & Criterion (최적화 함수 및 기준)
-
+        # Optimizer & Criterion
         self.criterion = torch.nn.CrossEntropyLoss().to(self.args.device)
         self.logsoftmax = nn.LogSoftmax(dim=1).to(self.args.device)
         self.softmax = nn.Softmax(dim=1).to(self.args.device)
-        # ASAM은 기본 옵티마이저(SGD 등)를 감싸서 동작하므로, 
-        # 초기화 시에는 SGD로 생성한 후 ASAM으로 래핑합니다.
+
         # ASAM Optimizer Wrapping
         if self.args.optim == 'ASAM':
             print("Initializing ASAM Optimizer...")
@@ -178,8 +175,7 @@ class CoCorrecting(BasicTrainer, Loss):
 
     def _adjust_learning_rate(self, epoch):
         """Sets the learning rate"""
-        # 학습률(Learning Rate) 스케줄링 함수
-        # Stage 2 이후부터 학습률을 점진적으로 감소시킴
+        # Decrease learning rate gradually after Stage 2
         if epoch < self.args.stage2:
             lr = self.args.lr
         elif epoch < (self.args.epochs - self.args.stage2) // 3 + self.args.stage2:
@@ -194,17 +190,17 @@ class CoCorrecting(BasicTrainer, Loss):
             param_group['lr'] = lr
 
     def _compute_loss(self, outputA, outputB, target, target_var, index, epoch, i, parallel=False):
-        # 손실 계산 함수 (핵심 로직)
+        # Compute Loss Function
         
-        # 1. Warm Up 단계 (Stage 1 이전)
-        # - 초기에는 Cross Entropy Loss로 일반적인 학습 진행
+        # 1. Warm Up & Pre-Stage 1 (Before Stage 1)
+        # - Standard Cross Entropy or Co-teaching
         if epoch < self.args.stage1:
-            # y_tilde 초기화: 초반에는 주어진 라벨(target)을 그대로 사용
+            # Initialize y_tilde with given targets initially
             onehot = torch.zeros(target.size(0),
                                  self.args.classnum).scatter_(1, target.long().view(-1, 1), self.args.K)
             onehot = onehot.numpy()
             self.new_y[index, :] = onehot
-            # Co-teaching 학습 진행
+            # Co-teaching
             forget_rate = self._rate_schedule(epoch)
             if self.args.forget_type == 'coteaching':
                 # [선택 전략 1] Co-teaching: 손실(Loss)이 작은 샘플을 서로 교차 선택
@@ -221,8 +217,8 @@ class CoCorrecting(BasicTrainer, Loss):
             return lossA, lossB, onehot, onehot, ind_A_discard, ind_B_discard, ind_A_update, ind_B_update, \
                    pure_ratio_1, pure_ratio_2, pure_ratio_discard_1, pure_ratio_discard_2
         
-        # 2. Label Correction 단계 (Stage 1 ~ Stage 2)
-        # - PENCIL 손실 함수 사용: 라벨 분포(y_tilde)를 학습 통해 업데이트
+        # 2. Stage 1: Label Correction (PENCIL)
+        # - Update label distribution (y_tilde) via PENCIL loss
         elif epoch < self.args.stage2:
             # selection 된 데이터만 파라미터 업데이트, 나머지는 라벨만 업데이트
             yy_A = self.yy
@@ -251,8 +247,8 @@ class CoCorrecting(BasicTrainer, Loss):
             return lossA, lossB, yy_A, yy_B, ind_A_discard, ind_B_discard, ind_A_update, ind_B_update, \
                    pure_ratio_1, pure_ratio_2, pure_ratio_discard_1, pure_ratio_discard_2
         
-        # 3. Fine Tuning 단계 (Stage 2 이후)
-        # - 수정된 라벨을 바탕으로 최종 미세 조정
+        # 3. Stage 2+: Fine Tuning
+        # - Final fine-tuning based on corrected labels
         else:
             yy_A = self.yy
             yy_A = torch.tensor(yy_A[index, :], dtype=torch.float32, requires_grad=True, device=self.args.device)
@@ -454,7 +450,7 @@ class CoCorrecting(BasicTrainer, Loss):
         return update_stage
 
     def training(self):
-        # 전체 학습 루프 실행 함수
+        # Main Training Loop
         timer = AverageMeter()
         # train
         end = time.time()
@@ -509,7 +505,7 @@ class CoCorrecting(BasicTrainer, Loss):
 
     # Train Loop
     def train(self, epoch=0):
-        # 1 에폭(Epoch) 동안의 학습 수행
+        # Train one epoch
         batch_time = AverageMeter()
         losses_A = AverageMeter()
         losses_B = AverageMeter()

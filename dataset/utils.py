@@ -94,13 +94,12 @@ def list_files(root, suffix, prefix=False):
 
     return files
 
-# 기본 유틸리티 함수들
 def multiclass_noisify(y, P, random_state=0):
     """ 
-    다중 클래스 라벨 노이즈 주입 함수
-    주어진 전이 확률 행렬 P에 따라 클래스를 무작위로 변경(Flip)합니다.
-    - y: 원본 라벨
-    - P: 노이즈 전이 행렬 (Transition Matrix)
+    Multi-class Label Noise Injection
+    Randomly flip classes based on transition matrix P.
+    - y: original labels
+    - P: transition matrix
     """
     print(np.max(y), P.shape[0])
     assert P.shape[0] == P.shape[1]
@@ -124,12 +123,11 @@ def multiclass_noisify(y, P, random_state=0):
     return new_y
 
 
-# noisify_pairflip 함수: 쌍(Pair)으로 라벨을 뒤집음
 def noisify_pairflip(y_train, noise, random_state=None, nb_classes=10):
     """
     Pair Flip Noise:
-    특정 클래스가 인접한 다음 클래스로 잘못 라벨링되는 경우를 시뮬레이션합니다.
-    예: 0 -> 1, 1 -> 2, ..., 9 -> 0
+    Simulate adjacent class mislabeling.
+    e.g., 0 -> 1, 1 -> 2, ..., 9 -> 0
     """
     P = np.eye(nb_classes)
     n = noise
@@ -154,8 +152,7 @@ def noisify_pairflip(y_train, noise, random_state=None, nb_classes=10):
 def noisify_multiclass_symmetric(y_train, noise, random_state=None, nb_classes=10):
     """
     Symmetric Noise:
-    모든 클래스로 균등한 확률로 잘못 라벨링되는 경우를 시뮬레이션합니다.
-    (완전 무작위 노이즈)
+    Uniformly random mislabeling across all classes.
     """
     P = np.ones((nb_classes, nb_classes))
     n = noise

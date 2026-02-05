@@ -45,7 +45,6 @@
 - **하이퍼파라미터**
 	- 없음, ROI 기반 자동 처리
 
-
 ### 4. Co-Correcting
 - **개념**
 	- 기본적으로 Dual Network의 agreement를 기반으로 학습

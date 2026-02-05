@@ -12,6 +12,8 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from sklearn.decomposition import PCA
+from sklearn.metrics import balanced_accuracy_score, f1_score, precision_score, recall_score, confusion_matrix, roc_auc_score, log_loss
+from sklearn.preprocessing import label_binarize
 
 from utils.settings import get_args
 from utils.label_checker import check_label
@@ -24,69 +26,83 @@ from BasicTrainer import BasicTrainer
 
 class CoCorrecting(BasicTrainer, Loss):
     """
-    Train Co-Pencil Method
-    
-    Co-Correcting (또는 Co-Pencil) 학습 클래스
-    - BasicTrainer: 학습 환경 설정, 로깅, 모델 저장 등의 기본 기능 상속
-    - Loss: Co-teaching 및 PENCIL 손실 함수 계산 로직 상속
+    Co-Correcting (Co-Pencil) Training Class (Diversity Version)
+    Inherits:
+        BasicTrainer: Setup, logging, saving
+        Loss: Co-teaching / PENCIL loss logic
     """
 
     def __init__(self, args):
         super().__init__(args)
         """
-            model A, B : Dual architecture (상호 학습을 위한 두 개의 모델)
-            model C : best model (최고 성능 모델 저장용)
-            prepare optim, loss func (최적화 도구 및 손실 함수 준비)
+        Initialize Dual Architecture (Model A, B) and Best Model (Model C)
+        Prepare Optimizers and Loss Functions
         """
-        # 상호 학습을 위한 모델 초기화 (동일한 구조의 모델 A, B 생성)
-        # [Design Constraint A] Random Seed 처리
-        # 두 네트워크는 서로 다른 Seed로 초기화하여 초기 Weight를 다르게 가져간다.
-        # 단, 이후 데이터 로더는 동일한 Seed를 사용하여 "Same Data, Different Initial Weights" 조건을 만족시킨다.
+        # Model Initialization (Design Constraint A: Different Seeds)
+        # Note: Loaders use same seed for "Same Data, Different Initial Weights"
         
-        # Model A Initialization (Seed: Base)
+        # Init Model A
         if self.args.random_seed is not None:
             torch.manual_seed(self.args.random_seed)
-            # torch.cuda.manual_seed_all(self.args.random_seed) # If needed for complete determinism
+            # torch.cuda.manual_seed_all(self.args.random_seed)
         self.modelA = self._get_model(self.args.backbone)
         
-        # Model B Initialization (Seed: Base + 1)
+        # Init Model B (Seed + 1)
         if self.args.random_seed is not None:
-            torch.manual_seed(self.args.random_seed)
-            # torch.manual_seed(self.args.random_seed + 1)
+            # torch.manual_seed(self.args.random_seed)
+            torch.manual_seed(self.args.random_seed + 1)
             # torch.cuda.manual_seed_all(self.args.random_seed + 1)
         self.modelB = self._get_model(self.args.backbone)
 
-        # 중요: 데이터 로더의 순서는 동일해야 하므로 Base Seed로 복구한다.
+        # Restore Base Seed
         if self.args.random_seed is not None:
             torch.manual_seed(self.args.random_seed)
             # torch.cuda.manual_seed_all(self.args.random_seed)
 
         self.modelC = self._get_model(self.args.backbone)
 
-        # freeze all layers except head
-        for name, param in self.modelA.named_parameters():
-            if "head" not in name:
-                param.requires_grad = False
-        for name, param in self.modelB.named_parameters():
-            if "head" not in name:
-                param.requires_grad = False
-        
-        # Optimizer & Criterion (최적화 함수 및 기준)
+        if self.args.backbone == "convnext":
+            # [Scratch/Pretrained Logic]
+            self.is_convnext = (self.args.backbone == "convnext")
+            self.is_pretrained = bool(self.args.pretrained)
 
+            # resolve freeze_warmup
+            # -1: auto (pretrained->1, scratch->0)
+            if self.args.freeze_warmup == -1:
+                self.freeze_warmup = 1 if self.is_pretrained else 0
+            else:
+                self.freeze_warmup = int(self.args.freeze_warmup)
+                
+            # Final Decision: Do we use the "Freeze Backbone during Warmup" recipe?
+            self.use_convnext_warmup = self.is_convnext and (self.args.warmup > 0) and (self.freeze_warmup == 1)
+
+            print(f"[Config] backbone={self.args.backbone} pretrained={self.is_pretrained} "
+                  f"warmup={self.args.warmup} freeze_warmup={self.freeze_warmup} "
+                  f"use_convnext_warmup={self.use_convnext_warmup} "
+                  f"lr={self.args.lr} lr2={self.args.lr2}")
+
+            if self.use_convnext_warmup:
+                # freeze all layers except head
+                for name, param in self.modelA.named_parameters():
+                    if "head" not in name:
+                        param.requires_grad = False
+                for name, param in self.modelB.named_parameters():
+                    if "head" not in name:
+                        param.requires_grad = False
+        
+        # Optimizer & Criterion
         self.criterion = torch.nn.CrossEntropyLoss().to(self.args.device)
         self.logsoftmax = nn.LogSoftmax(dim=1).to(self.args.device)
         self.softmax = nn.Softmax(dim=1).to(self.args.device)
 
-        # ASAM은 기본 옵티마이저(SGD 등)를 감싸서 동작하므로, 
-        # 초기화 시에는 SGD로 생성한 후 ASAM으로 래핑
         # ASAM Optimizer Wrapping
         if self.args.optim == 'ASAM':
             print("Initializing ASAM Optimizer...")
-            # ASAM은 Base Optimizer(SGD 등)를 감싸서 동작함
+            # Wrap Base Optimizer (SGD) with ASAM
             rho = getattr(self.args, 'rho', 0.5)
             eta = getattr(self.args, 'eta', 0.01)
             
-            # 1. Base Optimizer (SGD) 생성
+            # 1. Create Base Optimizer (SGD)
             self.optimizerA = self._get_optim(self.modelA.parameters(), optim='SGD')
             self.optimizerB = self._get_optim(self.modelB.parameters(), optim='SGD')
             
@@ -94,20 +110,27 @@ class CoCorrecting(BasicTrainer, Loss):
             self.optimizerA = ASAM(self.optimizerA, self.modelA, rho=rho, eta=eta)
             self.optimizerB = ASAM(self.optimizerB, self.modelB, rho=rho, eta=eta)
         else:
-            # Normal Optimizer check
+            # Normal Optimizer
             self.optimizerA = self._get_optim(self.modelA.parameters(), optim=self.args.optim)
             self.optimizerB = self._get_optim(self.modelB.parameters(), optim=self.args.optim)
 
         if self.args.scheduler == "Cosine":
-            # Warmup 기간 동안: Backbone Freeze & Head Training (LR: 1e-3 -> 1e-6)
-            self.schedulerA = CosineAnnealingLR(self.optimizerA, T_max=self.args.warmup, eta_min=1e-6)
-            self.schedulerB = CosineAnnealingLR(self.optimizerB, T_max=self.args.warmup, eta_min=1e-6)
+            if self.use_convnext_warmup:
+                # Warmup 기간 동안: Backbone Freeze & Head Training (LR: 1e-3 -> 1e-6)
+                # self.schedulerA = CosineAnnealingLR(self.optimizerA, T_max=self.args.warmup, eta_min=1e-6)
+                # self.schedulerB = CosineAnnealingLR(self.optimizerB, T_max=self.args.warmup, eta_min=1e-6)
+                self.schedulerA = None
+                self.schedulerB = None
+            else:
+                # Scratch (or no warmup logic): Start scheduler immediately
+                self.schedulerA = CosineAnnealingLR(self.optimizerA, T_max=self.args.epochs, eta_min=1e-6)
+                self.schedulerB = CosineAnnealingLR(self.optimizerB, T_max=self.args.epochs, eta_min=1e-6)
         
-        # 체크 포인트 불러오기
-        if args.resume:
-            if os.path.isfile(args.resume):
-                print(f"=> loading checkpoint '{args.resume}'")
-                checkpoint = torch.load(args.resume)
+        # Load Checkpoint
+        if self.args.resume:
+            if os.path.isfile(self.args.resume):
+                print(f"=> loading checkpoint '{self.args.resume}'")
+                checkpoint = torch.load(self.args.resume)
                 self.start_epoch = checkpoint['epoch']
                 
                 self.modelA.load_state_dict(checkpoint['state_dict_A'])
@@ -115,9 +138,9 @@ class CoCorrecting(BasicTrainer, Loss):
                 self.modelB.load_state_dict(checkpoint['state_dict_B'])
                 self.optimizerB.load_state_dict(checkpoint['optimizer_B'])
                 
-                print(f"=> loaded checkpoint '{args.resume}' (epoch {checkpoint['epoch']})")
+                print(f"=> loaded checkpoint '{self.args.resume}' (epoch {checkpoint['epoch']})")
             else:
-                print(f"=> no checkpoint found at '{args.resume}'")
+                print(f"=> no checkpoint found at '{self.args.resume}'")
 
         # trainer init
         self._recoder_init()
@@ -147,13 +170,20 @@ class CoCorrecting(BasicTrainer, Loss):
 
         epoch = self.args.start_epoch
         if epoch < self.args.warmup:
-            # Stage 1: backbone freeze
-            print("=> Resume: Stage 1 (Backbone Frozen)")
-            for model in [self.modelA, self.modelB]:
-                for name, p in model.named_parameters():
-                    if "head" not in name:
-                        p.requires_grad = False
-                    else:
+            if self.args.backbone == 'convnext':
+                # Stage 1: backbone freeze (only for convnext)
+                print("=> Resume: Stage 1 (Backbone Frozen - convnext)")
+                for model in [self.modelA, self.modelB]:
+                    for name, p in model.named_parameters():
+                        if "head" not in name:
+                            p.requires_grad = False
+                        else:
+                            p.requires_grad = True
+            else:
+                 # Stage 1 but not convnext: ensure unfreeze (default behavior for others)
+                print(f"=> Resume: Stage 1 (Backbone Unfrozen - {self.args.backbone})")
+                for model in [self.modelA, self.modelB]:
+                    for p in model.parameters():
                         p.requires_grad = True
         else:
             # Stage 2 이후: backbone unfreeze
@@ -169,11 +199,34 @@ class CoCorrecting(BasicTrainer, Loss):
                 self.record_dict = json.load(f)
                 print("=> loaded record file {}".format(self.args.record_dir))
 
+        # Ensure new keys exist (migration for old checkpoints)
+        self._ensure_record_keys()
+
+    def _ensure_record_keys(self):
+        """
+        Initialize missing metric keys in `record_dict` with default values (empty lists)
+        to prevent KeyErrors when resuming from old checkpoints.
+        """
+        required_keys = ["bal_acc", "macro_f1", "nll", "disagree"]
+        splits = ['train1', 'test1', 'val1', 'train2', 'test2', 'val2', 'train3', 'test3', 'val3']
+        
+        updated = False
+        for split in splits:
+            if split not in self.record_dict:
+                continue
+            for k in required_keys:
+                if k not in self.record_dict[split]:
+                    self.record_dict[split][k] = []
+                    updated = True
+        
+        if updated:
+            print("[Migration] Added missing metric keys (bal_acc, macro_f1, nll, disagree) to record_dict.")
+
     def _recoder_init(self):
         os.makedirs(self.args.dir, exist_ok=True)
         os.makedirs(join(self.args.dir, 'record'), exist_ok=True)
 
-        keys = ['acc', 'acc5', 'label_accu', 'loss', "pure_ratio", "label_n2t", "label_t2n", "pure_ratio_discard", "margin_accu"]
+        keys = ['acc', 'acc5', 'label_accu', 'loss', "pure_ratio", "label_n2t", "label_t2n", "pure_ratio_discard", "margin_accu", "bal_acc", "macro_f1", "nll", "disagree"]
         record_infos = {}
         for k in keys:
             record_infos[k] = []
@@ -198,35 +251,58 @@ class CoCorrecting(BasicTrainer, Loss):
             json.dump(self.record_dict, f, indent=4, sort_keys=True)
 
     # define drop rate schedule
+    def _update_drop_path(self, model, drop_path_rate):
+        for module in model.modules():
+            if 'DropPath' in module.__class__.__name__:
+                module.drop_prob = drop_path_rate
+                
     def gen_forget_rate(self, forget_rate, fr_type='type_1'):
         if fr_type == 'type_1':
-            rate_schedule = np.ones(args.n_epoch) * forget_rate
-            rate_schedule[:args.num_gradual] = np.linspace(0, forget_rate, args.num_gradual)
+            rate_schedule = np.ones(self.args.epochs) * forget_rate
+            rate_schedule[:self.args.num_gradual] = np.linspace(0, forget_rate, self.args.num_gradual)
 
         if fr_type == 'type_2':
-            rate_schedule = np.ones(args.n_epoch) * forget_rate
-            rate_schedule[:args.num_gradual] = np.linspace(0, forget_rate, args.num_gradual)
-            rate_schedule[args.num_gradual:] = np.linspace(forget_rate, 2 * forget_rate,
-                                                           args.n_epoch - args.num_gradual)
+            rate_schedule = np.ones(self.args.epochs) * forget_rate
+            rate_schedule[:self.args.num_gradual] = np.linspace(0, forget_rate, self.args.num_gradual)
+            rate_schedule[self.args.num_gradual:] = np.linspace(forget_rate, 2 * forget_rate,
+                                                           self.args.epochs - self.args.num_gradual)
 
         return rate_schedule
 
     def _rate_schedule(self, epoch):
-        rate_schedule = np.ones(self.args.epochs) * self.args.forget_rate
+        # 1. Base schedule initialized to target value (after ramp)
+        target_rate = self.args.forget_rate ** self.args.exponent
+        rate_schedule = np.ones(self.args.epochs) * target_rate
+        
+        # 2. Warmup: set to 0
         if self.args.warmup > 0:
             rate_schedule[:self.args.warmup] = 0
-            rate_schedule[self.args.warmup:self.args.warmup+self.args.num_gradual] = np.linspace(self.args.warmup,
-                                                                self.args.warmup + (
-                                                                            self.args.forget_rate ** self.args.exponent),
-                                                                self.args.num_gradual)
+            
+        # 3. Ramp up: 0 -> target_rate
+        ramp_start = self.args.warmup
+        ramp_len = self.args.num_gradual
+        ramp_end = ramp_start + ramp_len
+        
+        # Safety check for bounds
+        if ramp_end > self.args.epochs:
+            # If ramp goes beyond epochs, slice consistent slope
+            full_ramp = np.linspace(0, target_rate, ramp_len)
+            available_len = self.args.epochs - ramp_start
+            if available_len > 0:
+                rate_schedule[ramp_start:] = full_ramp[:available_len]
         else:
-            rate_schedule[:self.args.num_gradual] = np.linspace(0,
-                                                                self.args.forget_rate ** self.args.exponent,
-                                                                self.args.num_gradual)
+            # Normal case
+            rate_schedule[ramp_start:ramp_end] = np.linspace(0, target_rate, ramp_len)
+
+        # 4. Finetune schedule (Optional)
         if self.args.finetune_schedule == 1:
-            rate_schedule[self.args.stage2:] = np.linspace(self.args.forget_rate ** self.args.exponent,
-                                                           self.args.forget_rate ** self.args.gamma,
-                                                           self.args.epochs - self.args.stage2)
+            if self.args.stage2 < self.args.epochs:
+                rate_schedule[self.args.stage2:] = np.linspace(
+                    target_rate,
+                    self.args.forget_rate ** self.args.gamma,
+                    self.args.epochs - self.args.stage2
+                )
+
         return rate_schedule[epoch]
 
     def _adjust_learning_rate(self, epoch):
@@ -245,57 +321,38 @@ class CoCorrecting(BasicTrainer, Loss):
             param_group['lr'] = lr
 
     def _compute_loss(self, outputA, outputB, target, target_var, index, epoch, i, parallel=False):
-        # 손실 계산 함수 (핵심 로직)
+        # Compute Loss Function (Diversity Version)
         
-        # Warm Up 단계
-        if epoch < self.args.stage1:
-            # y_tilde 초기화: 초반에는 주어진 라벨(target)을 그대로 사용
-            onehot = torch.zeros(
-                len(target),
-                self.args.classnum,
-                device=target_var.device
-            )
-
+        # Warmup Phase
+        if epoch < self.args.warmup:
+            # Mode: Warmup (Simple CE + Diversity)
+            # Warmup: Initialize head or stabilize with Simple CE.
+            
+            # y_tilde 초기화
+            onehot = torch.zeros(len(target), self.args.classnum, device=target_var.device)
             onehot.scatter_(1, target_var.long().view(-1, 1), self.args.K)
-
             onehot = onehot.cpu().numpy()
             self.new_y[index, :] = onehot
             
-            # Calculate Standard CE Loss for ALL samples
-            # No Co-teaching selection here. Just simple training constraints.
+            # Simple CE Loss
             lossA = self._get_loss(outputA, target_var, loss_type="CE")
             lossB = self._get_loss(outputB, target_var, loss_type="CE")
             
             # [Diversity Regularization]
-            # Diversity Loss: ||pA - pB||^2
             probA = self.softmax(outputA)
             probB = self.softmax(outputB)
             diversity_loss = torch.mean(torch.sum((probA - probB)**2, dim=1))
             
-            # Determine Lambda based on schedule
-            current_lambda = 0.0
-            if epoch < self.args.warmup:
-                current_lambda = self.args.diversity_lambda_warmup
-            elif epoch < self.args.stage1:
-                current_lambda = self.args.diversity_lambda_stage1
-            else: 
-                current_lambda = self.args.diversity_lambda_stage1
-
-            # Subtract Diversity Loss (Maximize Disagreement)
-            lossA -= current_lambda * diversity_loss
-            lossB -= current_lambda * diversity_loss
+            lossA -= self.args.diversity_lambda_warmup * diversity_loss
+            lossB -= self.args.diversity_lambda_warmup * diversity_loss
             
-            # All indices are "updated", none are "discarded"
-            ind_A_discard = np.array([], dtype=int)
-            ind_B_discard = np.array([], dtype=int)
-            
-            # All samples are used for update
+            # Dummy returns for selection (Update ALL)
             num_samples = target.size(0)
             ind_A_update = np.arange(num_samples)
             ind_B_update = np.arange(num_samples)
+            ind_A_discard = np.array([], dtype=int)
+            ind_B_discard = np.array([], dtype=int)
             
-            # Statistics for logging (Pure Ratio is based on noise_or_not for monitoring)
-            # Since we pick ALL, the pure ratio is just the dataset's pure ratio in this batch
             pure_ratio_1 = np.sum(self.noise_or_not[index]) / float(num_samples)
             pure_ratio_2 = np.sum(self.noise_or_not[index]) / float(num_samples)
             pure_ratio_discard_1 = 0.0
@@ -304,10 +361,45 @@ class CoCorrecting(BasicTrainer, Loss):
             return lossA, lossB, onehot, onehot, ind_A_discard, ind_B_discard, ind_A_update, ind_B_update, \
                    pure_ratio_1, pure_ratio_2, pure_ratio_discard_1, pure_ratio_discard_2
         
-        # Label Correction 단계 (Stage 1 ~ Stage 2)
-        # PENCIL 손실 함수 사용: 라벨 분포(y_tilde)를 학습 통해 업데이트
+        elif epoch < self.args.stage1:
+            onehot = torch.zeros(len(target), self.args.classnum, device=target_var.device)
+            onehot.scatter_(1, target_var.long().view(-1, 1), self.args.K)
+            onehot = onehot.cpu().numpy()
+            self.new_y[index, :] = onehot
+            
+            # Hard Labels for Co-teaching
+            loss_type = "CE"
+            forget_rate = self._rate_schedule(epoch)
+            
+            if self.args.forget_type == 'coteaching':
+                lossA, lossB, ind_A_update, ind_B_update, ind_A_discard, ind_B_discard, \
+                pure_ratio_1, pure_ratio_2, pure_ratio_discard_1, pure_ratio_discard_2 = self.loss_coteaching(
+                    outputA, outputB, target_var, target_var, forget_rate, ind=index, loss_type=loss_type,
+                    target_var=target_var, noise_or_not=self.noise_or_not, parallel=parallel, softmax=False)
+                    
+            elif self.args.forget_type == 'coteaching_plus':
+                lossA, lossB, ind_A_update, ind_B_update, ind_A_discard, ind_B_discard, \
+                pure_ratio_1, pure_ratio_2, pure_ratio_discard_1, pure_ratio_discard_2 = self.loss_coteaching_plus(
+                    outputA, outputB, target_var, target_var, forget_rate, epoch * i, index, loss_type=loss_type,
+                    target_var=target_var, noise_or_not=self.noise_or_not, parallel=parallel, softmax=False)
+            else:
+                 raise NotImplementedError("forget_type {} not found".format(self.args.forget_type))
+            
+            # [Diversity Regularization]
+            probA = self.softmax(outputA)
+            probB = self.softmax(outputB)
+            diversity_loss = torch.mean(torch.sum((probA - probB)**2, dim=1))
+            
+            lossA -= self.args.diversity_lambda_stage1 * diversity_loss
+            lossB -= self.args.diversity_lambda_stage1 * diversity_loss
+
+            return lossA, lossB, onehot, onehot, ind_A_discard, ind_B_discard, ind_A_update, ind_B_update, \
+                   pure_ratio_1, pure_ratio_2, pure_ratio_discard_1, pure_ratio_discard_2
+        
+        # Stage 1: Label Correction (PENCIL)
+        # Update PENCIL loss: y_tilde distribution update
         elif epoch < self.args.stage2:
-            # selection 된 데이터만 파라미터 업데이트, 나머지는 라벨만 업데이트
+            # Update parameters for selected data only
             yy_A = self.yy
             yy_B = self.yy
             yy_A = torch.tensor(yy_A[index, :], dtype=torch.float32, requires_grad=True, device=self.args.device)
@@ -345,8 +437,8 @@ class CoCorrecting(BasicTrainer, Loss):
             return lossA, lossB, yy_A, yy_B, ind_A_discard, ind_B_discard, ind_A_update, ind_B_update, \
                    pure_ratio_1, pure_ratio_2, pure_ratio_discard_1, pure_ratio_discard_2
         
-        # Fine Tuning 단계 (Stage 2 이후)
-        # 수정된 라벨을 바탕으로 최종 미세 조정
+        # Stage 2+: Fine-tuning (PENCIL KL)
+        # Final fine-tuning based on corrected labels
         else:
             yy_A = self.yy
             yy_A = torch.tensor(yy_A[index, :], dtype=torch.float32, requires_grad=True, device=self.args.device)
@@ -569,14 +661,7 @@ class CoCorrecting(BasicTrainer, Loss):
                 update_stage += 1
         return update_stage
 
-    def _update_drop_path(self, model, drop_path_rate):
-        """
-        Recursively update DropPath rate in timm-based models (e.g. ConvNeXt, ViT)
-        """
-        for module in model.modules():
-            # timm.models.layers.DropPath check by name or type
-            if module.__class__.__name__ == 'DropPath':
-                module.drop_prob = drop_path_rate
+
 
 
     def training(self):
@@ -586,10 +671,18 @@ class CoCorrecting(BasicTrainer, Loss):
         end = time.time()
         for epoch in range(self.args.start_epoch, self.args.epochs):
             print('-----------------')
+            if epoch < self.args.warmup:
+                print(f"[Epoch {epoch}] Mode: Warmup (Simple CE + Diversity, No Selection)")
+            elif epoch < self.args.stage1:
+                print(f"[Epoch {epoch}] Mode: Pre-Stage 1 (Hard Label Co-teaching + Diversity)")
+            elif epoch < self.args.stage2:
+                print(f"[Epoch {epoch}] Mode: Stage 1 (PENCIL + Diversity)")
+            else:
+                print(f"[Epoch {epoch}] Mode: Stage 2+ (PENCIL KL + Diversity)")
             
             # unfreeze
-            if epoch == self.args.warmup:
-                print(f"{epoch} unfreeze")
+            if self.use_convnext_warmup and epoch == self.args.warmup:
+                print(f"Epoch {epoch} | Backbone Unfreeze (convnext)")
                 for name, param in self.modelA.named_parameters():
                     if "head" not in name: param.requires_grad = True
                 for name, param in self.modelB.named_parameters():
@@ -612,25 +705,30 @@ class CoCorrecting(BasicTrainer, Loss):
 
                 for pg in self.optimizerA.param_groups: pg['lr'] = self.args.lr2
                 for pg in self.optimizerB.param_groups: pg['lr'] = self.args.lr2
-
-                if self.args.scheduler == "Cosine":
-                    remain = self.args.epochs - epoch
-                    self.schedulerA = CosineAnnealingLR(self.optimizerA, T_max=remain, eta_min=1e-6)
-                    self.schedulerB = CosineAnnealingLR(self.optimizerB, T_max=remain, eta_min=1e-6)
             
-            if self.args.warmup > 0 and epoch < self.args.warmup:
-                drop_path_rate = 0.0
-            else:
-                drop_path_rate = self.args.drop_path_rate
+
+            # [Patch] Drop Path Alignment
+            # Baseline uses constant drop_path_rate (e.g. 0.2) throughout, EVEN during warmup.
+            # Do NOT force it to 0.0.
+            drop_path_rate = self.args.drop_path_rate
 
             self._update_drop_path(self.modelA, drop_path_rate)
             self._update_drop_path(self.modelB, drop_path_rate)
             print(f"Epoch {epoch}: Current Drop Path Rate = {drop_path_rate:.6f}")
 
             if self.args.scheduler == "Cosine":
-                if hasattr(self, 'schedulerA'): self.schedulerA.step()
-                if hasattr(self, 'schedulerB'): self.schedulerB.step()
-            else:
+                if self.use_convnext_warmup and epoch >= self.args.warmup:
+                    need_init = (self.schedulerA is None) or (epoch == self.args.warmup)
+                    
+                    if need_init:
+                        duration = self.args.epochs - self.args.warmup
+                        current_step = epoch - self.args.warmup - 1
+                        
+                        self.schedulerA = CosineAnnealingLR(self.optimizerA, T_max=duration, eta_min=1e-6, last_epoch=current_step)
+                        self.schedulerB = CosineAnnealingLR(self.optimizerB, T_max=duration, eta_min=1e-6, last_epoch=current_step)
+                        print(f"[Patch] Scheduler Created/Reset at epoch {epoch}. T_max={duration}")
+
+            if self.args.scheduler != "Cosine":
                 self._adjust_learning_rate(epoch)
 
             # load y_tilde
@@ -644,20 +742,20 @@ class CoCorrecting(BasicTrainer, Loss):
 
             if self.args.classnum > 5:
                 train_prec1_A, train_prec1_B, train_prec5_A, train_prec5_B = self.train(epoch)
-                val_prec1_A, val_prec1_B, val_prec5_A, val_prec5_B = self.val(epoch)
-                test_prec1_A, test_prec1_B, test_prec5_A, test_prec5_B = self.test(epoch)
+                val_prec1_A, val_prec1_B, val_prec1_mix, val_prec5_A, val_prec5_B, val_prec5_mix = self.val(epoch)
+                test_prec1_A, test_prec1_B, test_prec1_mix, test_prec5_A, test_prec5_B, test_prec5_mix = self.test(epoch)
             else:
                 train_prec1_A, train_prec1_B = self.train(epoch)
-                val_prec1_A, val_prec1_B = self.val(epoch)
-                test_prec1_A, test_prec1_B = self.test(epoch)
+                val_prec1_A, val_prec1_B, val_prec1_mix = self.val(epoch)
+                test_prec1_A, test_prec1_B, test_prec1_mix = self.test(epoch)
 
             # load best model to modelC
             if epoch < self.args.stage1:
                 best_ind = [val_prec1_A, val_prec1_B, self.best_prec1].index(max(val_prec1_A, val_prec1_B, self.best_prec1))
                 self.modelC.load_state_dict([self.modelA.state_dict(), self.modelB.state_dict(), self.modelC.state_dict()][best_ind])
 
-            is_best = max(val_prec1_A, val_prec1_B) > self.best_prec1
-            self.best_prec1 = max(val_prec1_A, val_prec1_B, self.best_prec1)
+            is_best = val_prec1_mix > self.best_prec1
+            self.best_prec1 = max(val_prec1_mix, self.best_prec1)
             save_checkpoint({
                 'epoch': epoch + 1,
                 'arch': self.args.backbone,
@@ -671,6 +769,15 @@ class CoCorrecting(BasicTrainer, Loss):
             }, is_best, filename=self.args.checkpoint_dir, modelbest=self.args.modelbest_dir)
 
             self._record()
+
+            if self.args.scheduler == "Cosine":
+
+                if self.schedulerA is not None: self.schedulerA.step()
+                if self.schedulerB is not None: self.schedulerB.step()
+            
+            # Simple LR logging
+            current_lr_A = self.optimizerA.param_groups[0]['lr']
+            print(f"Epoch {epoch} End | LR: {current_lr_A:.6f}")
 
             timer.update(time.time() - end)
             end = time.time()
@@ -691,6 +798,15 @@ class CoCorrecting(BasicTrainer, Loss):
         pure_ratio_discard_A = AverageMeter()
         pure_ratio_discard_B = AverageMeter()
         margin_accu = AverageMeter()
+
+        # 평가 지표 추가
+        all_y = []
+        all_probA = []
+        all_probB = []
+        all_probM = []
+        all_predA = []
+        all_predB = []
+
         if self.args.classnum > 5:
             top5_A = AverageMeter()
             top5_B = AverageMeter()
@@ -735,6 +851,20 @@ class CoCorrecting(BasicTrainer, Loss):
             outputB = F.softmax(outputB, dim=1)
             output_mix = F.softmax(output_mix, dim=1)
 
+            # 평가 지표 추가
+            y = target1.detach().cpu().numpy()
+
+            probA = outputA.detach().cpu().numpy()
+            probB = outputB.detach().cpu().numpy()
+            probM = output_mix.detach().cpu().numpy()
+
+            predA = probA.argmax(1)
+            predB = probB.argmax(1)
+
+            all_y.append(y)
+            all_probA.append(probA); all_probB.append(probB); all_probM.append(probM)
+            all_predA.append(predA); all_predB.append(predB)
+
             # Update recorder
             if self.args.classnum > 5:
                 prec1_A, prec5_A = accuracy(outputA.data, target1, topk=(1,5))
@@ -758,6 +888,10 @@ class CoCorrecting(BasicTrainer, Loss):
                 top5_A.update(float(prec5_A), input.shape[0])
                 top5_B.update(float(prec5_B), input.shape[0])
                 top5_mix.update(float(prec5_mix), input.shape[0])
+
+            pass # Loop 내에서는 accumulate만 수행 (이미 위에서 수행함)
+
+
 
             # --- ASAM Optimizer Step ---
             # ASAM이 활성화된 경우 Ascent -> Descent 과정을 수행
@@ -953,6 +1087,45 @@ class CoCorrecting(BasicTrainer, Loss):
         self.record_dict['train2']['pure_ratio_discard'].append(pure_ratio_discard_B.avg)
         self.record_dict['train2']['margin_accu'].append(margin_accu.avg)
 
+        # --- Calculate Extra Metrics (Train) ---
+        y_true = np.concatenate(all_y)
+        probA = np.concatenate(all_probA)
+        probB = np.concatenate(all_probB)
+        probM = np.concatenate(all_probM)
+        predA = np.concatenate(all_predA)
+        predB = np.concatenate(all_predB)
+        predM = probM.argmax(1)
+
+        # 핵심 지표 (Robust Calculation)
+        all_classes = np.arange(self.args.classnum)
+        
+        bal_acc_M = balanced_accuracy_score(y_true, predM) * 100
+        macro_f1_M = f1_score(y_true, predM, average="macro", labels=all_classes, zero_division=0) * 100
+        weighted_f1_M = f1_score(y_true, predM, average="weighted", labels=all_classes, zero_division=0) * 100
+
+        # disagreement
+        disagree = (predA != predB).mean() * 100
+
+        # 확률 품질
+        nll_M = log_loss(y_true, probM, labels=all_classes)
+
+        # AUROC (Train에서는 예외처리 필수)
+        auroc_M = None
+        try:
+            y_bin = label_binarize(y_true, classes=all_classes)
+            auroc_M = roc_auc_score(y_bin, probM, average="macro", multi_class="ovr")
+        except Exception:
+            pass
+
+        print(f"\n[ExtraMetrics] bal_acc={bal_acc_M:.2f} macroF1={macro_f1_M:.2f} "
+              f"wF1={weighted_f1_M:.2f} disagree(A,B)={disagree:.2f} NLL={nll_M:.4f}")
+
+        # Update recorder
+        self.record_dict['train3']['bal_acc'].append(bal_acc_M)
+        self.record_dict['train3']['macro_f1'].append(macro_f1_M)
+        self.record_dict['train3']['nll'].append(nll_M)
+        self.record_dict['train3']['disagree'].append(disagree)
+
         self.record_dict['train3']['acc'].append(top1_mix.avg)
         self.record_dict['train3']['label_n2t'].append(label_n2t_C)
         self.record_dict['train3']['label_t2n'].append(label_t2n_C)
@@ -980,6 +1153,14 @@ class CoCorrecting(BasicTrainer, Loss):
             top5_B = AverageMeter()
             top5_mix = AverageMeter()
 
+        # 평가 지표 추가
+        all_y = []
+        all_probA = []
+        all_probB = []
+        all_probM = []
+        all_predA = []
+        all_predB = []
+
         with torch.no_grad():
             # Validate
             end = time.time()
@@ -997,6 +1178,17 @@ class CoCorrecting(BasicTrainer, Loss):
                 outputA = F.softmax(outputA, dim=1)
                 outputB = F.softmax(outputB, dim=1)
                 output_mix = F.softmax(output_mix, dim=1)
+
+                # 평가 지표 추가
+                y = label.detach().cpu().numpy()
+                probA = outputA.detach().cpu().numpy()
+                probB = outputB.detach().cpu().numpy()
+                probM = output_mix.detach().cpu().numpy()
+                predA = probA.argmax(1)
+                predB = probB.argmax(1)
+                all_y.append(y)
+                all_probA.append(probA); all_probB.append(probB); all_probM.append(probM)
+                all_predA.append(predA); all_predB.append(predB)
 
                 # Update recorder
                 if self.args.classnum > 5:
@@ -1035,6 +1227,28 @@ class CoCorrecting(BasicTrainer, Loss):
                                                                                                    top5_A.avg, top5_B.avg))
             else:
                 print("\n * Top1 acc:\tA: {:.3f}\tB: {:.3f}".format(top1_A.avg, top1_B.avg))
+        
+        # --- Calculate Extra Metrics (Val) ---
+        y_true = np.concatenate(all_y)
+        probA = np.concatenate(all_probA)
+        probB = np.concatenate(all_probB)
+        probM = np.concatenate(all_probM)
+        predA = np.concatenate(all_predA)
+        predB = np.concatenate(all_predB)
+        predM = probM.argmax(1)
+
+        bal_acc_M = balanced_accuracy_score(y_true, predM) * 100
+        all_classes = np.arange(self.args.classnum)
+        macro_f1_M = f1_score(y_true, predM, average="macro", labels=all_classes, zero_division=0) * 100
+        disagree = (predA != predB).mean() * 100
+        nll_M = log_loss(y_true, probM, labels=np.arange(self.args.classnum))
+        
+        print(f"[Val Metrics] bal_acc={bal_acc_M:.2f} macroF1={macro_f1_M:.2f} disagree={disagree:.2f} NLL={nll_M:.4f}")
+
+        self.record_dict['val3']['bal_acc'].append(bal_acc_M)
+        self.record_dict['val3']['macro_f1'].append(macro_f1_M)
+        self.record_dict['val3']['nll'].append(nll_M)
+        self.record_dict['val3']['disagree'].append(disagree)
 
         self.record_dict['val1']['acc'].append(top1_A.avg)
         if self.args.classnum > 5:
@@ -1051,8 +1265,8 @@ class CoCorrecting(BasicTrainer, Loss):
             self.record_dict['val3']['acc5'].append(top5_mix.avg)
 
         if self.args.classnum > 5:
-            return top1_A.avg, top1_B.avg, top5_A.avg, top5_B.avg
-        return top1_A.avg, top1_B.avg
+            return top1_A.avg, top1_B.avg, top1_mix.avg, top5_A.avg, top5_B.avg, top5_mix.avg
+        return top1_A.avg, top1_B.avg, top1_mix.avg
 
     def test(self, epoch=0):
         self.modelA.eval()
@@ -1068,6 +1282,14 @@ class CoCorrecting(BasicTrainer, Loss):
             top5_A = AverageMeter()
             top5_B = AverageMeter()
             top5_mix = AverageMeter()
+
+        # 평가 지표 추가
+        all_y = []
+        all_probA = []
+        all_probB = []
+        all_probM = []
+        all_predA = []
+        all_predB = []
 
         with torch.no_grad():
             # Validate
@@ -1086,6 +1308,17 @@ class CoCorrecting(BasicTrainer, Loss):
                 outputA = F.softmax(outputA, dim=1)
                 outputB = F.softmax(outputB, dim=1)
                 output_mix = F.softmax(output_mix, dim=1)
+
+                # 평가 지표 추가
+                y = label.detach().cpu().numpy()
+                probA = outputA.detach().cpu().numpy()
+                probB = outputB.detach().cpu().numpy()
+                probM = output_mix.detach().cpu().numpy()
+                predA = probA.argmax(1)
+                predB = probB.argmax(1)
+                all_y.append(y)
+                all_probA.append(probA); all_probB.append(probB); all_probM.append(probM)
+                all_predA.append(predA); all_predB.append(predB)
 
                 # Update recorder
                 if self.args.classnum > 5:
@@ -1125,6 +1358,28 @@ class CoCorrecting(BasicTrainer, Loss):
             else:
                 print("\n * Top1 acc:\tA: {:.3f}\tB: {:.3f}".format(top1_A.avg, top1_B.avg))
 
+        # --- Calculate Extra Metrics (Test) ---
+        y_true = np.concatenate(all_y)
+        probA = np.concatenate(all_probA)
+        probB = np.concatenate(all_probB)
+        probM = np.concatenate(all_probM)
+        predA = np.concatenate(all_predA)
+        predB = np.concatenate(all_predB)
+        predM = probM.argmax(1)
+
+        bal_acc_M = balanced_accuracy_score(y_true, predM) * 100
+        all_classes = np.arange(self.args.classnum)
+        macro_f1_M = f1_score(y_true, predM, average="macro", labels=all_classes, zero_division=0) * 100
+        disagree = (predA != predB).mean() * 100
+        nll_M = log_loss(y_true, probM, labels=np.arange(self.args.classnum))
+
+        print(f"[Test Metrics] bal_acc={bal_acc_M:.2f} macroF1={macro_f1_M:.2f} disagree={disagree:.2f} NLL={nll_M:.4f}")
+
+        self.record_dict['test3']['bal_acc'].append(bal_acc_M)
+        self.record_dict['test3']['macro_f1'].append(macro_f1_M)
+        self.record_dict['test3']['nll'].append(nll_M)
+        self.record_dict['test3']['disagree'].append(disagree)
+
         self.record_dict['test1']['acc'].append(top1_A.avg)
         if self.args.classnum > 5:
             self.record_dict['test1']['acc5'].append(top5_A.avg)
@@ -1140,8 +1395,8 @@ class CoCorrecting(BasicTrainer, Loss):
             self.record_dict['test3']['acc5'].append(top5_mix.avg)
 
         if self.args.classnum > 5:
-            return top1_A.avg, top1_B.avg, top5_A.avg, top5_B.avg
-        return top1_A.avg, top1_B.avg
+            return top1_A.avg, top1_B.avg, top1_mix.avg, top5_A.avg, top5_B.avg, top5_mix.avg
+        return top1_A.avg, top1_B.avg, top1_mix.avg
 
 
 def save_checkpoint(state, is_best, filename='', modelbest=''):

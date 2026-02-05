@@ -31,20 +31,20 @@ def get_args():
         stage2 = 200
 
     elif sys.platform == 'win32':
-        # Windows 전용 기본 설정
+        # Windows Default Settings
         isic_root = 'D:/Datasets/ISIC'
         petskin_root = 'D:/Datasets/PetSkin'
         mnist_root = './data/mnist'
         pcam_root = "C:\\Users\\cream\\OneDrive\\Desktop\\co-correcting-data"
         batch_size = 32
-        device = 'cuda:0' # GPU 사용 시
+        device = 'cuda:0' # GPU
         data_device = 0
         noise_type = 'clean'
         stage1 = 70
         stage2 = 200
 
     else:
-        # 기본 설정 (Default)
+        # Default Settings
         clothing1m_root = "/home/fgldlb/Documents/dataset/Clothing-1M"
         isic_root = None
         mnist_root = './data/mnist'
@@ -60,100 +60,100 @@ def get_args():
 
     parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 
-    # 일반적인 학습 파라미터(Normal parameters)
+    # General Parameters
     parser.add_argument('-b', '--batch-size', default=batch_size, type=int,
-                        metavar='N', help='미니 배치 크기 (기본값: 256)')
+                        metavar='N', help='Mini-batch size (default: 256)')
     parser.add_argument('--lr', '--learning-rate', default=1e-4, type=float,
-                        metavar='H-P', help='초기 학습률 (Initial Learning Rate)')
+                        metavar='H-P', help='Initial Learning Rate')
     parser.add_argument('--lr2', '--learning-rate2', default=1e-5, type=float,
-                        metavar='H-P', help='Stage 3(파인튜닝)에서의 학습률')
+                        metavar='H-P', help='Stage 3 (Finetuning) Learning Rate')
     parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
-                        help='모멘텀 (Momentum), SGD 등에서 사용')
+                        help='Momentum (e.g., SGD)')
     parser.add_argument('--weight-decay', '--wd', default=1e-3, type=float,
-                        metavar='W', help='가중치 감쇠 (Weight Decay), 과적합 방지 (기본값: 1e-4)')
+                        metavar='W', help='Weight Decay (default: 1e-4)')
     parser.add_argument('--backbone', dest="backbone", default="resnet50", type=str,
-                        help="사용할 백본 네트워크 모델 (예: resnet50)")
+                        help="Backbone network (e.g., resnet50)")
     parser.add_argument('--optim', dest="optim", default="SGD", type=str,
                         choices=['SGD', 'Adam', 'AdamW', 'RMSprop', 'Adadelta', 'Adagrad', 'mix', 'ASAM'],
-                        help="최적화 알고리즘 (Optimizer) 선택")
+                        help="Optimizer choice")
     parser.add_argument('--scheduler', dest='scheduler', default=None, type=str, choices=['cyclic', None, "SWA", "Cosine"],
-                        help="학습률 스케줄러 선택")
+                        help="LR Scheduler choice")
     # 기존 코드는 Default로 4로 설정되어 있었음
     parser.add_argument('-j', '--workers', default=0, type=int, metavar='N',
-                        help='데이터 로딩에 사용할 워커 프로세스 수 (기본값: 0)')
+                        help='Workers for data loading (default: 0)')
     
-    # ASAM Optimizer 파라미터 (Custom)
+    # ASAM Optimizer Parameters (Custom)
     parser.add_argument('--rho', default=0.5, type=float,
-                        help='ASAM의 rho 파라미터 (Ascent Step 크기).')
+                        help='ASAM rho (Ascent Step Size).')
     parser.add_argument('--eta', default=0.01, type=float,
-                        help='ASAM의 eta 파라미터 (스무딩 관련). 논문에서 0.01로 고정')
+                        help='ASAM eta (Smoothing). Default 0.01')
     
-    # Co-teaching 파라미터 (라벨 노이즈 처리를 위한 핵심 설정)
+    # Co-teaching Params
     """
-        --forget rate : R(t) = (1 - forget rate)
+        --forget rate : R(t) = 1 - forget_rate
         --num-gradual : E_k
     """
     parser.add_argument('--forget-rate', '--fr', '--forget_rate', default=0.2, type=float,
-                        metavar='H-P', help='망각(Forget) 비율. 노이즈 비율과 비슷하게 설정하는 것을 권장.')
+                        metavar='H-P', help='Forget rate (match noise rate).')
     parser.add_argument('--num-gradual', '--ng', '--num_gradual', default=10, type=int,
-                        metavar='H-P', help='선형적으로 망각 비율을 높여갈 에폭 수 (Tk).')
+                        metavar='H-P', help='Epochs to linearly increase forget rate.')
     parser.add_argument('--exponent', default=1, type=float,
-                        metavar='H-P', help='망각 비율 증가 지수 (1이면 선형).')
+                        metavar='H-P', help='Forget rate increase exponent (1=linear).')
     parser.add_argument('--forget-type', dest="forget_type", default="coteaching_plus", type=str,
                         choices=['coteaching_plus', 'coteaching'],
-                        help="샘플 선택 방식 (Selection Strategy): [coteaching_plus, coteaching]")
+                        help="Selection Strategy: [coteaching_plus, coteaching]")
     parser.add_argument('--cost-type', dest="cost_type", default="CE", type=str,
                         choices=['CE', 'anl'],
-                        help="비용 함수 (Cost Function): [CE, anl]")
+                        help="Cost Function: [CE, anl]")
     parser.add_argument('--warmup', '--wm', '--warm-up', default=0, type=int,
-                        metavar='H-P', help='웜업(Warm up) 에폭 수. 초기에는 모든 데이터를 신뢰.')
+                        metavar='H-P', help='Warmup epochs (trust all data).')
     parser.add_argument('--linear-num', '--linear_num', default=256, type=int,
-                        metavar='H-P', help='선형 레이어의 노드 수 (일부 모델용).')
+                        metavar='H-P', help='Linear layer nodes (specific models).')
     
-    # PENCIL 알고리즘 파라미터 (라벨 수정 및 확률적 모델링)
+    # PENCIL Parameters
     """
-        --alpha : 호환성 손실 가중치 (compatibility loss weight)
-        --beta : 엔트로피 손실 가중치 (entropy loss weight)
-        --lambda1 : 라벨 수정 비율 (label correction rate)
+        --alpha : compatibility loss weight
+        --beta : entropy loss weight
+        --lambda1 : label correction rate
     """
     parser.add_argument('--alpha', default=0.4, type=float,
-                        metavar='H-P', help='호환성 손실(Compatibility Loss)의 계수(alpha)')
+                        metavar='H-P', help='Compatibility Loss coeff (alpha)')
     parser.add_argument('--beta', default=0.1, type=float,
-                        metavar='H-P', help='엔트로피 손실(Entropy Loss)의 계수(beta)')
+                        metavar='H-P', help='Entropy Loss coeff (beta)')
     parser.add_argument('--lambda1', default=200, type=int,
-                        metavar='H-P', help='라벨 수정(Label Correction) 강도 (lambda), 값이 클수록 원래 라벨을 덜 신뢰')
+                        metavar='H-P', help='Label Correction strength (lambda). Higher = less trust in original.')
     parser.add_argument('--K', default=10.0, type=float, )
     parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
-                        help='학습을 시작할 에폭 번호 (재시작 시 유용)')
+                        help='Start epoch number')
     parser.add_argument('--epochs', default=320, type=int, metavar='H-P',
-                        help='총 학습 에폭 수')
+                        help='Total epochs')
     parser.add_argument('--stage1', default=stage1, type=int,
-                        metavar='H-P', help='Stage 1 (Warm up 및 초기 학습) 종료 에폭')
+                        metavar='H-P', help='Stage 1 end epoch (Warmup/Initial)')
     parser.add_argument('--stage2', default=stage2, type=int,
-                        metavar='H-P', help='Stage 2 (라벨 수정 단계) 종료 에폭')
+                        metavar='H-P', help='Stage 2 end epoch (Label Correction)')
     
     # 노이즈(Noise) 설정
     parser.add_argument('--noise', default=0.20, type=float,
-                        help='데이터 라벨의 노이즈 비율 (실험용)')
+                        help='Label noise ratio (experimental)')
     parser.add_argument('--noise_type', default=noise_type,  choices=['clean', 'sn', 'pairflip'],type=str,
-                        help='노이즈 타입 (clean: 노이즈 없음, sn: 대칭 노이즈, pairflip: 페어 플립)')
+                        help='Noise type: clean, sn (symmetric), pairflip')
     
     # 데이터(Data) 설정
     parser.add_argument("--dataset", dest="dataset", default='mnist', type=str,
                         choices=['mnist', 'cifar10', 'cifar100', 'cifar2', 'isic', 'clothing1m', 'pcam', 'petskin'],
-                        help="사용할 데이터셋 선택 (petskin 포함)")
+                        help="Dataset choice (includes petskin)")
     parser.add_argument("--image_size", dest="image_size", default=224, type=int,
-                        help="입력 이미지 크기 (예: 224)")
-    parser.add_argument('--classnum', default=2, type=int,
-                        metavar='H-P', help='데이터셋 클래스 개수')
+                        help="Input image size (e.g., 224)")
+    parser.add_argument('--classnum', default=8, type=int,
+                        metavar='H-P', help='Number of classes')
     parser.add_argument('--device', dest='device', default=device, type=str,
-                        help='사용할 GPU/CPU 디바이스 (예: cuda:0)')
+                        help='Device (e.g., cuda:0)')
     parser.add_argument('--data_device', dest="data_device", default=data_device, type=int,
-                        help="데이터를 로드할 위치 (0: 디스크에서 읽기, 1: RAM에 미리 로드). 메모리 부족 시 0 권장.")
+                        help="Data location: 0=disk, 1=RAM (0 recommended if OOM).")
     parser.add_argument('--dataRoot',dest='root',default=isic_root,
-                        type=str,metavar='PATH',help='데이터셋 위치(경로)')
-    parser.add_argument('--datanum', default=15000, type=int,
-                        metavar='H-P', help='학습 데이터 샘플 수')
+                        type=str,metavar='PATH',help='Dataset path')
+    parser.add_argument('--datanum', default=22528, type=int,
+                        metavar='H-P', help='Training sample count')
     parser.add_argument('--train-redux', dest="train_redux", default=None, type=int,
                         help='train data number, default None')
     parser.add_argument('--test-redux', dest="test_redux", default=None, type=int,
@@ -203,6 +203,13 @@ def get_args():
     parser.add_argument('--diversity-lambda-finetune', dest='diversity_lambda_finetune', default=0.0, type=float,
                         metavar='L', help='Diversity lambda for Fine-tuning stage (default: 0.0)')
 
+    # Pretrained Flag
+    parser.add_argument("--pretrained", dest="pretrained", default=1, type=int,
+                        help="1: use pretrained backbone recipe, 0: scratch")
+
+    parser.add_argument("--freeze-warmup", dest="freeze_warmup", default=-1, type=int,
+                        help="ConvNeXt warmup behavior. -1: auto, 0: no freeze, 1: freeze backbone")
+    
     args = parser.parse_args()
 
     # Setting for different dataset
@@ -251,10 +258,10 @@ def get_args():
         print("Training on PetSkin")
         # args.backbone = 'resnet50' # 기본 모델: ResNet50 (Deleted to allow user input)
         args.image_size = 224 # 이미지 크기
-        args.classnum = 6 # 클래스 개수 (A1~A6)
+        args.classnum = 8 # 클래스 개수 (A1~A6)
         args.input_dim = 3 # 입력 채널 (RGB)
         # 기본 데이터 개수 설정 (실제 데이터셋 크기에 따라 다를 수 있음)
-        args.datanum = 16341
+        args.datanum = 22528
 
 
 

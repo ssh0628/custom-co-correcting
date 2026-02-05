@@ -129,10 +129,10 @@ class Bottleneck(nn.Module):
 
 class ResNet(nn.Module):
     """
-    ResNet (Residual Network) 모델 클래스
-    Deep Residual Learning for Image Recognition 논문을 기반으로 구현됨.
-    - block: BasicBlock 또는 Bottleneck
-    - layers: 각 단계(layer)별 블록 개수 리스트
+    ResNet (Residual Network) Model Class
+    Based on 'Deep Residual Learning for Image Recognition'.
+    - block: BasicBlock or Bottleneck
+    - layers: List of block counts for each layer
     """
 
     def __init__(self, block, layers, num_classes=1000, zero_init_residual=False,

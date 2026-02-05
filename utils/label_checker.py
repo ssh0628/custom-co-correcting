@@ -4,12 +4,7 @@ from os.path import join
 
 
 def check_label_acc(A, B, onehotA=False, onehotB=False):
-    """
-    라벨 정확도(Accuracy) 계산 함수
-    :param A: 예측 라벨 (또는 라벨 A)
-    :param B: 정답 라벨 (또는 라벨 B)
-    :return: 일치하는 비율 (정확도)
-    """
+    """Calculate label accuracy."""
     A = np.argmax(A, axis=1) if onehotA else A
     B = np.argmax(B, axis=1) if onehotB else B
 
@@ -25,10 +20,7 @@ def check_label_acc(A, B, onehotA=False, onehotB=False):
     return accu
 
 def check_label_noisy2true(new_label, clean_label, noise_or_not, onehotA=False, onehotB=False):
-    """
-    Noisy -> True 복원 비율 계산
-    - 원래 노이즈였던 라벨이 모델에 의해 올바른 라벨(True)로 수정된 비율 확인
-    """
+    """Ratio of Noisy -> True correction."""
     new_label = np.argmax(new_label, axis=1) if onehotA else new_label
     clean_label = np.argmax(clean_label, axis=1) if onehotB else clean_label
 

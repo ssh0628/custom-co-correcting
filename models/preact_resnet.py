@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 
 class PreActBlock(nn.Module):
-    '''Pre-activation ResNet 기본 블록 (BN -> ReLU -> Conv)'''
+    '''Pre-activation ResNet Basic Block (BN -> ReLU -> Conv)'''
     expansion = 1
 
     def __init__(self, in_planes, planes, stride=1):
@@ -35,7 +35,7 @@ class PreActBlock(nn.Module):
 
 
 class PreActBottleneck(nn.Module):
-    '''Pre-activation ResNet 병목(Bottleneck) 블록'''
+    '''Pre-activation ResNet Bottleneck Block'''
     expansion = 4
 
     def __init__(self, in_planes, planes, stride=1):
