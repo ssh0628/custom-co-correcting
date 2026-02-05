@@ -18,7 +18,7 @@
 ```bash
 --optim ASAM --rho 0.5 --eta 0.01
 ```
-
+---
 
 ### 2. ANL (Adaptive Negative Learning)
 - **개념**
@@ -33,7 +33,7 @@
 ```bash
 --cost-type anl --beta 0.1
 ```
-
+---
 
 ### 3. Image Aware Crop & Resize (new_PetSkin)
 - **개념**
@@ -44,6 +44,7 @@
 	- 이미지 캐싱: npy 형식으로 전처리 후 캐싱하여 학습 속도 향상
 - **하이퍼파라미터**
 	- 없음, ROI 기반 자동 처리
+---
 
 ### 4. Co-Correcting
 - **개념**
@@ -53,8 +54,6 @@
   - `Custom-Co-Correcting-Diversity`: Dual Network의 Diversity를 유도하여 학습
   - (Unsupervised Time Series Outlier Detection with Diversity-Driven Convolutional Ensembles—Extended Version 논문 참고)
   - 기본적으로 `Custom-Co-Correcting` 사용 권장 (어느 정도 다양성 유지됨 / 후자는 개발 중)
-
-
 ---
 
 ## 설치 및 요구사항
@@ -71,6 +70,7 @@ pip install -r requirements.txt
 ## 데이터 준비
 - 데이터셋 구조:
 
+전처리 전
 ```bash
 PetSkin/
 ├─ images/
@@ -84,6 +84,25 @@ PetSkin/
 │  │  ├─ 000000.json
 │  ├─ class_002/
 │  └─ ...
+```
+
+전처리 후
+```bash
+PetSkin/
+├─ images/
+│  ├─ train/
+│  │  ├─ class_001/
+│  │  │  ├─ 000000.jpg
+│  │  │  ├─ 000001.jpg
+│  │  │  ├─ ...
+│  │  │  ├─ 000000.json
+│  │  │  ├─ 000001.json
+│  │  ├─ class_002/
+│  │  │  ├─ 000000.jpg
+│  │  │  ├─ 000001.jpg
+│  │  │  ├─ ...
+│  ├─ val/
+│  └─ test/
 ```
 
 - 이미지 전처리 후 npy 캐싱 
