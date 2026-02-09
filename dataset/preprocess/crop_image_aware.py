@@ -16,9 +16,6 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG"}
 
 class ImageProcessor:
-    """
-    Encapsulates the advanced cropping and resizing logic from new_PetSkin.py
-    """
     def __init__(self, interpolation=Image.BICUBIC, debug=False):
         self.interpolation = interpolation
         self.debug = debug
@@ -154,53 +151,19 @@ class ImageProcessor:
         roi_w = roi_x2 - roi_x1
         roi_h = roi_y2 - roi_y1
         target_w, target_h = target_size
-        img_w, img_h = img.size
-        
+        target_min_side = min(target_w, target_h)
+
         center_x = roi_x1 + roi_w / 2
         center_y = roi_y1 + roi_h / 2
 
-        is_w_sufficient = roi_w >= target_w
-        is_h_sufficient = roi_h >= target_h
-        img_large_enough = img_w >= target_w and img_h >= target_h
-        
-        # Case 0: Mixed sufficiency + Image large enough -> Square Clamp
-        if img_large_enough and ((is_w_sufficient and not is_h_sufficient) or (not is_w_sufficient and is_h_sufficient)):
-             crop_img = self._square_crop_clamp(img, center_x, center_y, target_size[0])
-             if crop_img.size != target_size:
-                 crop_img = crop_img.resize(target_size, self.interpolation)
-             return crop_img
-
-        # Case 1: Both small -> Context Expansion + Padding
-        if roi_w < target_w and roi_h < target_h:
-            crop_x1 = int(round(center_x - target_w / 2))
-            crop_y1 = int(round(center_y - target_h / 2))
-            crop_x2 = crop_x1 + target_w
-            crop_y2 = crop_y1 + target_h
-            
-            valid_x1 = max(0, crop_x1)
-            valid_y1 = max(0, crop_y1)
-            valid_x2 = min(img_w, crop_x2)
-            valid_y2 = min(img_h, crop_y2)
-            
-            pad_left = max(0, valid_x1 - crop_x1)
-            pad_top = max(0, valid_y1 - crop_y1)
-            pad_right = max(0, crop_x2 - valid_x2)
-            pad_bottom = max(0, crop_y2 - valid_y2)
-            
-            if valid_x2 <= valid_x1 or valid_y2 <= valid_y1:
-                 return img.resize(target_size, self.interpolation)
-
-            crop_img = img.crop((valid_x1, valid_y1, valid_x2, valid_y2))
-            
-            if any([pad_left, pad_top, pad_right, pad_bottom]):
-                crop_img = self.pad_reflection(crop_img, pad_left, pad_top, pad_right, pad_bottom)
-            
+        # If ROI min-side is smaller than target, take a wider center crop without reflection.
+        if min(roi_w, roi_h) < target_min_side:
+            crop_img = self._square_crop_clamp(img, center_x, center_y, target_min_side)
             if crop_img.size != target_size:
                 crop_img = crop_img.resize(target_size, self.interpolation)
-                
             return crop_img
 
-        # Case 2: Both large enough -> Simple Crop & Downscale
+        # Both ROI sides are large enough -> simple ROI crop + downscale.
         else:
             crop_img = img.crop(roi_box)
             return crop_img.resize(target_size, self.interpolation)
@@ -215,6 +178,8 @@ def parse_args():
     p.add_argument("--splits", type=str, default="train,val,test")
     p.add_argument("--classes", type=str, default="A1,A2,A3,A4,A5,A6,A7,A8")
     p.add_argument("--resize", type=int, default=224, help="Target size (both width and height)")
+    p.add_argument("--min_roi_min_side", type=int, default=112,
+                   help="Drop sample if ROI min(width, height) is smaller than this value")
     p.add_argument("--copy_json", action="store_true", help="Copy JSON alongside cropped images")
     return p.parse_args()
 
@@ -316,6 +281,12 @@ def main():
                         roi_box = extract_roi_box(json_path, img.width, img.height)
                         
                         if roi_box:
+                            roi_w = roi_box[2] - roi_box[0]
+                            roi_h = roi_box[3] - roi_box[1]
+                            if min(roi_w, roi_h) < args.min_roi_min_side:
+                                stats["dropped_small_roi"] += 1
+                                continue
+
                             # Apply Advanced Logic
                             final_img = processor.context_aware_crop_resize(img, roi_box, target_size)
                             stats["processed_with_roi"] += 1
