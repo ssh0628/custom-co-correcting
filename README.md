@@ -27,7 +27,7 @@
 	- `Adaptive`: 혼동이 예상되는 클래스만 선택적으로 NL 수행
 	- 노이즈 비율이 심할때 사용 권장
 - **하이퍼파라미터**
-	-	`--cost-type`: anl 선택
+	-	`--cost-type`: anl 선택 (ANL, CE)
 	-	`--beta`: NL 비율 조정 (예: 0.1)
 - **사용법**
 ```bash
@@ -35,7 +35,7 @@
 ```
 ---
 
-### 3. Image Aware Crop & Resize (new_PetSkin)
+### 3. Image Aware Crop & Resize (crop_image_aware.py)
 - **개념**
 	- ROI(병변) 중심으로 주변 Context 포함 224x224 크기로 Crop
 	- 원본이 224x224보다 작으면 절대 확대하지 않음
@@ -53,7 +53,8 @@
   - `Custom-Co-Correcting`: 기본적인 Co-Correcting 학습
   - `Custom-Co-Correcting-Diversity`: Dual Network의 Diversity를 유도하여 학습
   - (Unsupervised Time Series Outlier Detection with Diversity-Driven Convolutional Ensembles—Extended Version 논문 참고)
-  - 기본적으로 `Custom-Co-Correcting` 사용 권장 (어느 정도 다양성 유지됨 / 후자는 개발 중)
+  - 기본적으로 `Custom-Co-Correcting` 사용 권장 
+  - (`Custom-Co-Correcting-Diversity`는 개발 중)
 ---
 
 ## 설치 및 요구사항
@@ -85,6 +86,7 @@ PetSkin/
 │  ├─ class_002/
 │  └─ ...
 ```
+---
 
 전처리 후
 ```bash
@@ -122,7 +124,8 @@ chmod +x scripts/mydatasets.sh
 2. 학습 커맨드 예시
 
 ```bash
-python train.py \
+```bash
+python Custom-Co-Correcting.py \
 --dataset petskin \
 --dataRoot /path/to/PetSkin \
 --optim ASAM --rho 0.5 --eta 0.01 \
@@ -134,6 +137,14 @@ python train.py \
 --num-gradual 10 \
 --alpha 0.9 --lambda1 0.5 \
 --cache_dir /path/to/cache
+```
+
+### 3. ResNet50 Baseline (Standalone)
+- **파일**: `models/resnet_50.py`
+- **설명**: ResNet50을 이용한 Standalone 학습 스크립트 (Head-only freeze -> Full finetune) / 기타 model들도 동일
+- **실행**:
+```bash
+python models/resnet_50.py
 ```
 ---
 
