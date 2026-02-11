@@ -2,7 +2,7 @@ from ultralytics import YOLO
 import os
 
 
-MODEL_NAME = 'yolov8s-cls.pt'  # yolov8n-cls.pt, yolov8s-cls.pt, etc.
+MODEL_NAME = 'yolov8m-cls.pt'  # yolov8n-cls.pt, yolov8s-cls.pt, etc.
 PRETRAINED = True 
 
 DATASET_PATH = os.path.abspath('/root/project/dataset/dataset_cropped') 
@@ -68,17 +68,17 @@ def main():
         pretrained=PRETRAINED,
         exist_ok=True,
         fliplr=0.5,
-        flipud=0.5,          # Recommended 0.5 as ConvNeXt uses vertical flip
-        degrees=90.0,        # Match RandomRotation(90) (reduce to 30-45 if too strong)
-        hsv_h=0.02,          # Approximate ColorJitter with HSV
-        hsv_s=0.75,
-        hsv_v=0.25,
+        flipud=0.5,          
+        degrees=45.0,        
+        hsv_h=0.01,          
+        hsv_s=0.10,
+        hsv_v=0.05,
         mixup=MIXUP,
         cutmix=CUTMIX,
         label_smoothing=LS,
         plots=True, 
-        val=True,                  # Explicitly enable validation
-        verbose=True,              # Verbose logging
+        val=True,                
+        verbose=True,            
     )
 
     print("[Info] Training Completed.")

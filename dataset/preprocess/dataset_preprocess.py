@@ -10,12 +10,14 @@ from tqdm import tqdm
 from collections import defaultdict
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Balanced Dataset Preprocessor")
+    parser = argparse.ArgumentParser(description="Dataset Preprocessor (split with optional balancing)")
     parser.add_argument("--src", type=str, default="/root/project/dataset/Relabeled", help="Source directory containing class folders (A1~A8)")
-    parser.add_argument("--dst", type=str, default="/root/project/dataset/dataset", help="Destination directory for train/val/test split")
+    parser.add_argument("--dst", type=str, default="/root/project/dataset/whole_relabeled_dataset", help="Destination directory for train/val/test split")
     parser.add_argument("--mode", type=str, default="copy", choices=["copy", "move", "symlink"], help="File transfer mode")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility")
     parser.add_argument("--split", type=float, nargs=3, default=[0.7, 0.15, 0.15], help="Train/Val/Test split ratios")
+    parser.add_argument("--balanced", default=False, action="store_true",
+                        help="If set, downsample each class to min valid count before split")
     
     # New Options
     parser.add_argument("--strict_classes", default=True, action="store_true", help="Fail if any class has 0 valid samples")
@@ -127,31 +129,33 @@ def main():
             else:
                 stats[cls][reason] += 1
 
-    # 2. Balanced Downsampling
-    print("\n[2] Balanced Downsampling...")
+    # 2. Sample Selection (optional balanced downsampling)
+    print("\n[2] Sample Selection...")
     available_classes = [cls for cls in classes if len(valid_samples[cls]) > 0]
     
     if not available_classes:
         print("[ERR] No valid classes found. Exiting.")
         sys.exit(1)
 
-    min_cnt = min(len(valid_samples[cls]) for cls in available_classes)
-    
     # Check strict mode for 0 valid sample classes
     empty_classes = set(classes) - set(available_classes)
     if args.strict_classes and empty_classes:
         print(f"[ERR] Strict mode: Classes {empty_classes} have 0 valid samples. Exiting.")
         sys.exit(1)
 
-    K = min_cnt
-    print(f"  => Minimum Class Count K = {K}")
-    print(f"  => Downsampling all classes to {K} samples.")
-    
     selected_samples = {}
-    for cls in available_classes:
-        samples = valid_samples[cls]
-        selected = random.sample(samples, K)
-        selected_samples[cls] = selected
+    if args.balanced:
+        min_cnt = min(len(valid_samples[cls]) for cls in available_classes)
+        print(f"  => Balanced mode ON")
+        print(f"  => Minimum Class Count K = {min_cnt}")
+        print(f"  => Downsampling all classes to {min_cnt} samples.")
+        for cls in available_classes:
+            samples = valid_samples[cls]
+            selected_samples[cls] = random.sample(samples, min_cnt)
+    else:
+        print("  => Balanced mode OFF (using all valid samples per class).")
+        for cls in available_classes:
+            selected_samples[cls] = list(valid_samples[cls])
 
     # 3. Splitting
     print("\n[3] Splitting Train/Val/Test...")
@@ -160,21 +164,16 @@ def main():
     r_train /= total_ratio
     r_val /= total_ratio
     
-    n_train = int(K * r_train)
-    n_val = int(K * r_val)
-    n_test = K - n_train - n_val
-    
-    print(f"  => Per Class: Train={n_train}, Val={n_val}, Test={n_test}")
-    
     # Init Record
     record = {
         "metadata": {
             "seed": args.seed,
-            "K": K,
-            "split_ratios": [r_train, r_val, n_test/K], # approx
-            "counts": {"train": n_train, "val": n_val, "test": n_test}
+            "balanced": args.balanced,
+            "split_ratios": [r_train, r_val, r_test / total_ratio],
         },
         "stats": stats,
+        "split_counts": {"train": 0, "val": 0, "test": 0},
+        "class_split_counts": {},
         "files": {"train": [], "val": [], "test": []}
     }
     
@@ -184,6 +183,21 @@ def main():
     for cls in available_classes:
         samples = selected_samples[cls]
         random.shuffle(samples) 
+
+        n_total = len(samples)
+        n_train = int(n_total * r_train)
+        n_val = int(n_total * r_val)
+        n_test = n_total - n_train - n_val
+
+        record["class_split_counts"][cls] = {
+            "total": n_total,
+            "train": n_train,
+            "val": n_val,
+            "test": n_test,
+        }
+        record["split_counts"]["train"] += n_train
+        record["split_counts"]["val"] += n_val
+        record["split_counts"]["test"] += n_test
         
         splits = {
             "train": samples[:n_train],
@@ -219,7 +233,15 @@ def main():
 
     # 5. Reporting
     print("\n[5] Summary")
-    print(f"  Total Processed Images: {len(available_classes) * K}")
+    total_processed = (
+        record["split_counts"]["train"]
+        + record["split_counts"]["val"]
+        + record["split_counts"]["test"]
+    )
+    print(f"  Balanced mode: {args.balanced}")
+    print(f"  Total Processed Images: {total_processed}")
+    print(f"  Split Counts: train={record['split_counts']['train']}, "
+          f"val={record['split_counts']['val']}, test={record['split_counts']['test']}")
     print("  Class Stats:")
     for cls in classes:
         s = stats[cls]

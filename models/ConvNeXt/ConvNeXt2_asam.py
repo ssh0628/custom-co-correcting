@@ -14,6 +14,7 @@ from PIL import Image, ImageFile
 from tqdm import tqdm
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from pathlib import Path
+from utils.asam import ASAM
 
 # =========================
 # 0. PIL / CUDA / AMP 설정
@@ -37,8 +38,8 @@ print(f"AMP Config: device={amp_device}, dtype={amp_dtype}")
 # =========================
 # 1. 설정
 # =========================
-NPY_DIR = "/root/project/dataset/whole_cache_npy"
-SAVE_DIR = "/root/project/convnext/convnext_whole"
+NPY_DIR = "/root/project/dataset/aware_cache_npy_80"
+SAVE_DIR = "/root/project/convnext/convnext_aware_80_asam"
 os.makedirs(SAVE_DIR, exist_ok=True)
 LOG_PATH = os.path.join(SAVE_DIR, "train_log.csv")
 
@@ -49,11 +50,6 @@ IMG_SIZE = 224
 RANDOM_SEED = 0
 PATIENCE = 20
 Freeze = 5
-NUM_WORKERS = 8
-PREFETCH_FACTOR = 4
-PERSISTENT_WORKERS = True
-USE_CHANNELS_LAST = True
-USE_COMPILE = False
 
 import random
 random.seed(RANDOM_SEED)
@@ -64,6 +60,9 @@ torch.cuda.manual_seed_all(RANDOM_SEED)
 WEIGHT_DECAY = 0.1
 LR1 = 1e-3
 LR2 = 3e-5
+ASAM_RHO = 0.5
+ASAM_ETA = 0.01
+USE_ASAM = True
 
 pretrained = True
 model_name = "convnextv2_tiny.fcmae_ft_in22k_in1k"
@@ -71,6 +70,7 @@ model_name = "convnextv2_tiny.fcmae_ft_in22k_in1k"
 drop_path_rate = 0.2
 
 print(f"[Info] Reading Data from: {NPY_DIR}")
+print(f"[Info] USE_ASAM={USE_ASAM} rho={ASAM_RHO} eta={ASAM_ETA}")
 
 # =========================
 # 1.1 Class Check
@@ -141,14 +141,7 @@ model = create_model(
     pretrained=pretrained,
     num_classes=NUM_CLASSES,
     drop_path_rate=drop_path_rate
-)
-if USE_CHANNELS_LAST:
-    model = model.to(device, memory_format=torch.channels_last)
-else:
-    model = model.to(device)
-
-if USE_COMPILE and device.type == "cuda":
-    model = torch.compile(model)
+).to(device)
 
 # Backbone freeze (Init)
 for name, param in model.named_parameters():
@@ -160,23 +153,12 @@ data_config = resolve_data_config({}, model=model)
 # =========================
 # 4. Transform
 # =========================
-"""
 train_transform = transforms.Compose([
     transforms.Resize((IMG_SIZE, IMG_SIZE)),
     transforms.RandomHorizontalFlip(),
     transforms.RandomVerticalFlip(),
     transforms.RandomRotation(90),
     transforms.ColorJitter(0.2, 0.75, 0.25, 0.04),
-    transforms.ToTensor(),
-    transforms.Normalize(data_config['mean'], data_config['std']),
-])
-"""
-train_transform = transforms.Compose([
-    transforms.Resize((IMG_SIZE, IMG_SIZE)),
-    transforms.RandomHorizontalFlip(p=0.5),
-    transforms.RandomVerticalFlip(p=0.5),
-    transforms.RandomRotation(45),
-    transforms.ColorJitter(0.1, 0.1, 0.05, 0.02),
     transforms.ToTensor(),
     transforms.Normalize(data_config['mean'], data_config['std']),
 ])
@@ -199,33 +181,9 @@ train_dataset = NPYPathDataset(NPY_DIR, "train", transform=train_transform)
 val_dataset = NPYPathDataset(NPY_DIR, "val", transform=eval_transform)
 test_dataset = NPYPathDataset(NPY_DIR, "test", transform=eval_transform)
 
-train_loader = DataLoader(
-    train_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=True,
-    num_workers=NUM_WORKERS,
-    pin_memory=True,
-    prefetch_factor=PREFETCH_FACTOR,
-    persistent_workers=PERSISTENT_WORKERS,
-)
-val_loader = DataLoader(
-    val_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=False,
-    num_workers=NUM_WORKERS,
-    pin_memory=True,
-    prefetch_factor=PREFETCH_FACTOR,
-    persistent_workers=PERSISTENT_WORKERS,
-)
-test_loader = DataLoader(
-    test_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=False,
-    num_workers=NUM_WORKERS,
-    pin_memory=True,
-    prefetch_factor=PREFETCH_FACTOR,
-    persistent_workers=PERSISTENT_WORKERS,
-)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True,  num_workers=8, pin_memory=True)
+val_loader   = DataLoader(val_dataset,   batch_size=BATCH_SIZE, shuffle=False, num_workers=8, pin_memory=True)
+test_loader  = DataLoader(test_dataset,  batch_size=BATCH_SIZE, shuffle=False, num_workers=8, pin_memory=True)
 
 # =========================
 # 6. Optimizer / Scheduler
@@ -236,7 +194,12 @@ optimizer = optim.AdamW(
     lr=LR1,
     weight_decay=WEIGHT_DECAY
 )
+asam_optimizer = ASAM(optimizer, model, rho=ASAM_RHO, eta=ASAM_ETA) if USE_ASAM else None
 scheduler = CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS, eta_min=1e-6)
+
+# Keep GradScaler for non-ASAM path. ASAM uses custom ascent/descent steps.
+use_grad_scaler = (device.type == "cuda" and amp_dtype == torch.float16 and not USE_ASAM)
+scaler = torch.cuda.amp.GradScaler(enabled=use_grad_scaler)
 
 # =========================
 # 7. Train Loop
@@ -257,6 +220,7 @@ for epoch in range(NUM_EPOCHS):
         for p in model.parameters():
             p.requires_grad = True
         optimizer = optim.AdamW(model.parameters(), lr=LR2, weight_decay=WEIGHT_DECAY)
+        asam_optimizer = ASAM(optimizer, model, rho=ASAM_RHO, eta=ASAM_ETA) if USE_ASAM else None
         scheduler = CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS-epoch, eta_min=1e-6)
 
     # ---- Train ----
@@ -264,23 +228,43 @@ for epoch in range(NUM_EPOCHS):
     total, correct, loss_sum = 0, 0, 0.0
 
     for x, y, idx in tqdm(train_loader, desc="Train"):
-        if USE_CHANNELS_LAST:
-            x = x.to(device, non_blocking=True, memory_format=torch.channels_last)
-        else:
-            x = x.to(device, non_blocking=True)
+        x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
-        optimizer.zero_grad(set_to_none=True)
+        if USE_ASAM:
+            # ASAM two-pass update: ascent (w+e) -> descent on restored weights.
+            optimizer.zero_grad(set_to_none=True)
+            with torch.amp.autocast(device_type=amp_device, dtype=amp_dtype):
+                out = model(x)
+                loss = criterion(out, y)
+            loss.backward()
+            asam_optimizer.ascent_step()
+            optimizer.zero_grad(set_to_none=True)
 
-        with torch.amp.autocast(device_type=amp_device, dtype=amp_dtype):
-            out = model(x)
-            loss = criterion(out, y)
-
-        loss.backward()
-        optimizer.step()
+            with torch.amp.autocast(device_type=amp_device, dtype=amp_dtype):
+                out_adv = model(x)
+                loss_adv = criterion(out_adv, y)
+            loss_adv.backward()
+            asam_optimizer.descent_step()
+            loss_for_log = loss_adv
+            out_for_log = out_adv
+        else:
+            optimizer.zero_grad(set_to_none=True)
+            with torch.amp.autocast(device_type=amp_device, dtype=amp_dtype):
+                out = model(x)
+                loss = criterion(out, y)
+            if use_grad_scaler:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
+            loss_for_log = loss
+            out_for_log = out
 
         bs = y.size(0)
-        loss_sum += loss.item() * bs
-        correct += (out.argmax(1) == y).sum().item()
+        loss_sum += float(loss_for_log.detach().cpu()) * bs
+        correct += (out_for_log.argmax(1) == y).sum().item()
         total += bs
 
     train_loss = loss_sum / total
@@ -295,10 +279,7 @@ for epoch in range(NUM_EPOCHS):
 
     with torch.no_grad():
         for x, y, idx in tqdm(val_loader, desc="Val"):
-            if USE_CHANNELS_LAST:
-                x = x.to(device, non_blocking=True, memory_format=torch.channels_last)
-            else:
-                x = x.to(device, non_blocking=True)
+            x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
             with torch.amp.autocast(device_type=amp_device, dtype=amp_dtype):
                 out = model(x)
@@ -341,10 +322,7 @@ model.eval()
 correct, total = 0, 0
 with torch.no_grad():
     for x, y, idx in tqdm(test_loader, desc="Test"):
-        if USE_CHANNELS_LAST:
-            x = x.to(device, non_blocking=True, memory_format=torch.channels_last)
-        else:
-            x = x.to(device, non_blocking=True)
+        x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
         with torch.amp.autocast(device_type=amp_device, dtype=amp_dtype):
             pred = model(x).argmax(1)

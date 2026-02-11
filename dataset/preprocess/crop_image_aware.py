@@ -146,7 +146,7 @@ class ImageProcessor:
         
         return img.crop((x1, y1, x2, y2))
 
-    def context_aware_crop_resize(self, img, roi_box, target_size=(224, 224)):
+    def context_aware_crop_resize(self, img, roi_box, target_size=(224, 224), small_roi_min_side=112):
         roi_x1, roi_y1, roi_x2, roi_y2 = roi_box
         roi_w = roi_x2 - roi_x1
         roi_h = roi_y2 - roi_y1
@@ -156,14 +156,14 @@ class ImageProcessor:
         center_x = roi_x1 + roi_w / 2
         center_y = roi_y1 + roi_h / 2
 
-        # If ROI min-side is smaller than target, take a wider center crop without reflection.
-        if min(roi_w, roi_h) < target_min_side:
+        # If ROI is small, use fixed-size center window crop (salvage path).
+        if min(roi_w, roi_h) < small_roi_min_side:
             crop_img = self._square_crop_clamp(img, center_x, center_y, target_min_side)
             if crop_img.size != target_size:
                 crop_img = crop_img.resize(target_size, self.interpolation)
             return crop_img
 
-        # Both ROI sides are large enough -> simple ROI crop + downscale.
+        # ROI is already large enough -> simple ROI crop + downscale.
         else:
             crop_img = img.crop(roi_box)
             return crop_img.resize(target_size, self.interpolation)
@@ -173,13 +173,15 @@ def parse_args():
     p = argparse.ArgumentParser("Crop using Context-Aware logic (like new_PetSkin.py)")
     p.add_argument("--src", type=str, default="/root/project/dataset/dataset",
                    help="Input dataset root")
-    p.add_argument("--dst", type=str, default="/root/project/dataset/dataset_aware_cropped",
+    p.add_argument("--dst", type=str, default="/root/project/dataset/dataset_aware_cropped_min_drop",
                    help="Output dataset root")
-    p.add_argument("--splits", type=str, default="train,val,test")
+    p.add_argument("--splits", type=str, default="train,val")
     p.add_argument("--classes", type=str, default="A1,A2,A3,A4,A5,A6,A7,A8")
     p.add_argument("--resize", type=int, default=224, help="Target size (both width and height)")
-    p.add_argument("--min_roi_min_side", type=int, default=112,
+    p.add_argument("--drop_min_side", type=int, default=40,
                    help="Drop sample if ROI min(width, height) is smaller than this value")
+    p.add_argument("--small_roi_min_side", type=int, default=80,
+                   help="If ROI min-side is below this value, use fixed 224 center crop salvage")
     p.add_argument("--copy_json", action="store_true", help="Copy JSON alongside cropped images")
     return p.parse_args()
 
@@ -253,6 +255,8 @@ def main():
     print(f"[*] Source: {src_root}")
     print(f"[*] Dest:   {dst_root}")
     print(f"[*] Resize: {target_size}")
+    print(f"[*] Drop min side: {args.drop_min_side}")
+    print(f"[*] Small ROI threshold: {args.small_roi_min_side}")
 
     stats = defaultdict(int)
 
@@ -283,12 +287,18 @@ def main():
                         if roi_box:
                             roi_w = roi_box[2] - roi_box[0]
                             roi_h = roi_box[3] - roi_box[1]
-                            if min(roi_w, roi_h) < args.min_roi_min_side:
+                            roi_min_side = min(roi_w, roi_h)
+                            if roi_min_side < args.drop_min_side:
                                 stats["dropped_small_roi"] += 1
                                 continue
 
-                            # Apply Advanced Logic
-                            final_img = processor.context_aware_crop_resize(img, roi_box, target_size)
+                            # Apply context-aware logic with small-ROI salvage.
+                            final_img = processor.context_aware_crop_resize(
+                                img,
+                                roi_box,
+                                target_size,
+                                small_roi_min_side=args.small_roi_min_side,
+                            )
                             stats["processed_with_roi"] += 1
                         else:
                             # Fallback Logic (same as new_PetSkin fallback)
